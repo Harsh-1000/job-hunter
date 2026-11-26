@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 
 from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
-from telegram.error import BadRequest, Forbidden, TelegramError
+from telegram.error import BadRequest, Forbidden, NetworkError, TelegramError, TimedOut
 from telegram.ext import (Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler,
                           TypeHandler, filters)
 
@@ -300,6 +300,26 @@ async def cmd_filters(update: Update, ctx: ContextTypes.DEFAULT_TYPE, user) -> N
     await reply(update, ctx, ui.filters_text(f, p.years if p else None), reply_markup=ui.filters_kb(f))
 
 
+async def _edit(q, text: str, kb) -> None:
+    try:
+        await q.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+    except BadRequest as err:   # "message is not modified"
+        if "not modified" not in str(err):
+            raise
+
+
+def merge_keywords(f: Filters, new: list[str]) -> list[str]:
+    """Append new titles (case-insensitive dedupe, up to MAX_KEYWORDS). Returns the ones added."""
+    added = []
+    for k in new:
+        if len(f.keywords) >= MAX_KEYWORDS:
+            break
+        if k.lower() not in {x.lower() for x in f.keywords}:
+            f.keywords.append(k)
+            added.append(k)
+    return added
+
+
 async def _show_menu(q, f: Filters, p) -> None:
     try:
         await q.edit_message_text(ui.filters_text(f, p.years if p else None), parse_mode=ParseMode.HTML,
@@ -321,6 +341,20 @@ async def on_filter_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE, user)
     if key == "menu":
         await q.answer()
         return await _show_menu(q, f, p)
+    if key in ("kw", "kwrm", "kwsug"):
+        note = ""
+        if key == "kwrm" and arg is not None and arg.isdigit() and int(arg) < len(f.keywords):
+            removed = f.keywords.pop(int(arg))
+            save_filters(uid, f)
+            note = f"Removed {removed}"
+        elif key == "kwsug" and p:
+            added = merge_keywords(f, p.suggested_keywords)
+            save_filters(uid, f)
+            note = f"Added {len(added)}" + (" (list is full)" if len(f.keywords) >= MAX_KEYWORDS else "")
+        await q.answer(note)
+        return await _edit(q, ui.keywords_text(f, p), ui.keywords_kb(f, p))
+    if key == "kwset":
+        key = "kw"
     if key in ui.MULTI:
         attr, table, title = ui.MULTI[key]
         sel = list(getattr(f, attr))
@@ -400,9 +434,19 @@ def apply_text_setting(f: Filters, key: str, text: str) -> str:
     if key == "kw":
         kws = parse_list(t, MAX_KEYWORDS)
         if not kws:
-            raise ValueError("Send at least one keyword.")
+            raise ValueError("Send at least one job title.")
         f.keywords = kws
-        return f"🔎 Keywords: {', '.join(kws)}"
+        return f"🔎 Job titles: {', '.join(kws)}"
+    if key == "kwadd":
+        new = parse_list(t, 20)
+        if not new:
+            raise ValueError("Send at least one job title, e.g. ML Engineer")
+        if len(f.keywords) >= MAX_KEYWORDS:
+            raise ValueError(f"You already have {MAX_KEYWORDS} titles (the max). Remove one first with /titles.")
+        added = merge_keywords(f, new)
+        skipped = [k for k in new if k not in added]
+        msg = f"➕ Added: {', '.join(added) or 'nothing new'}"
+        return msg + (f" · skipped (already there or list full): {', '.join(skipped)}" if skipped else "")
     if key == "loc":
         locs = parse_list(t, MAX_LOCATIONS)
         if not locs:
@@ -443,6 +487,8 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE, user) -> None:
         return await reply(update, ctx, f"⚠️ {e(str(err))}", reply_markup=ui.CANCEL_KB)
     ctx.user_data.pop("awaiting", None)
     save_filters(user["id"], f)
+    if key in ("kw", "kwadd"):
+        return await reply(update, ctx, f"✅ {e(msg)}\n\n" + ui.keywords_text(f, p), reply_markup=ui.keywords_kb(f, p))
     await reply(update, ctx, f"✅ {e(msg)}\n\n" + ui.filters_text(f, p.years if p else None),
                 reply_markup=ui.filters_kb(f))
 
@@ -688,7 +734,16 @@ async def ack_unknown(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await update.callback_query.answer()   # stale button from an old message
 
 
+@active_only
+async def cmd_titles(update: Update, ctx: ContextTypes.DEFAULT_TYPE, user) -> None:
+    f, p = load(user["id"])
+    await reply(update, ctx, ui.keywords_text(f, p), reply_markup=ui.keywords_kb(f, p))
+
+
 async def on_error(update: object, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if isinstance(ctx.error, (NetworkError, TimedOut)):   # internet blip: one line, no traceback
+        log.warning("network problem talking to Telegram: %s", ctx.error)
+        return
     log.error("handler error", exc_info=ctx.error)
 
 
@@ -696,7 +751,7 @@ async def on_error(update: object, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
 COMMANDS = [
     ("scan", "🔍 Search LinkedIn now"), ("filters", "⚙️ All filters"), ("resume", "📄 Your resume"),
-    ("keywords", "🔎 Set keywords"), ("location", "📍 Set locations"), ("threshold", "🎯 Min match %"),
+    ("titles", "🔎 Add / remove job titles"), ("addtitle", "➕ Add job titles"), ("location", "📍 Set locations"), ("threshold", "🎯 Min match %"),
     ("years", "👤 Your years of experience"), ("saved", "⭐ Saved & applied jobs"),
     ("insights", "💡 Skills you're missing"), ("status", "📊 Stats"), ("pause", "⏯ Pause / resume alerts"),
     ("clear", "🧹 Clear chat"), ("intro", "📖 Guided tour of all features"), ("help", "❓ Commands"),
@@ -735,6 +790,9 @@ def build() -> Application:
     app.add_handler(CommandHandler(["resume", "cv"], cmd_resume, filters=private))
     app.add_handler(CommandHandler("keywords", _quick_setting("kw", "/keywords AI Engineer, GenAI Engineer"),
                                    filters=private))
+    app.add_handler(CommandHandler(["titles", "keywords_menu"], cmd_titles, filters=private))
+    app.add_handler(CommandHandler(["addtitle", "addtitles", "add"],
+                                   _quick_setting("kwadd", "/addtitle ML Engineer, Python Developer"), filters=private))
     app.add_handler(CommandHandler("location", _quick_setting("loc", "/location India, Remote"), filters=private))
     app.add_handler(CommandHandler("threshold", _quick_setting("thr", "/threshold 20"), filters=private))
     app.add_handler(CommandHandler("years", _quick_setting("myy", "/years 2.5"), filters=private))

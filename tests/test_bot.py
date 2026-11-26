@@ -150,14 +150,81 @@ def test_apply_text_setting_errors(key, text):
         bot.apply_text_setting(Filters(), key, text)
 
 
-def test_keyword_flow_via_button_then_text():
-    active(1)
+def test_keyword_button_opens_titles_menu():
+    active(1, keywords=["AI Engineer", "Backend Developer"])
+    upd = make_update(uid=1, data="f:kw")
+    run(bot.on_filter_button(upd, make_ctx()))
+    text = upd.callback_query.edit_message_text.await_args.args[0]
+    kb = upd.callback_query.edit_message_text.await_args.kwargs["reply_markup"].to_dict()["inline_keyboard"]
+    assert "Job titles" in text and "AI Engineer" in text and "Backend Developer" in text
+    datas = [b["callback_data"] for row in kb for b in row]
+    assert {"f:kwrm:0", "f:kwrm:1", "f:kwadd", "f:kwset", "f:menu"} <= set(datas)
+
+
+def test_add_titles_flow_appends_not_replaces():
+    active(1, keywords=["AI Engineer"])
     ctx = make_ctx()
-    run(bot.on_filter_button(make_update(uid=1, data="f:kw"), ctx))
+    run(bot.on_filter_button(make_update(uid=1, data="f:kwadd"), ctx))
+    assert ctx.user_data["awaiting"] == "kwadd"
+    run(bot.on_text(make_update(uid=1, text="ML Engineer, ai engineer, Python Developer"), ctx))
+    assert Filters.from_json(db.get_user(1)["filters"]).keywords == ["AI Engineer", "ML Engineer", "Python Developer"]
+    assert "Added: ML Engineer, Python Developer" in ctx.bot.sent[-1].text and "awaiting" not in ctx.user_data
+    assert "f:kwrm:2" in str(ctx.bot.sent[-1].kw["reply_markup"].to_dict())   # back on the titles menu
+
+
+def test_replace_all_titles():
+    active(1, keywords=["AI Engineer"])
+    ctx = make_ctx()
+    run(bot.on_filter_button(make_update(uid=1, data="f:kwset"), ctx))
     assert ctx.user_data["awaiting"] == "kw"
-    run(bot.on_text(make_update(uid=1, text="AI Engineer, Backend Developer"), ctx))
-    assert Filters.from_json(db.get_user(1)["filters"]).keywords == ["AI Engineer", "Backend Developer"]
-    assert "awaiting" not in ctx.user_data
+    run(bot.on_text(make_update(uid=1, text="Java Developer, Backend Developer"), ctx))
+    assert Filters.from_json(db.get_user(1)["filters"]).keywords == ["Java Developer", "Backend Developer"]
+
+
+def test_remove_title_button():
+    active(1, keywords=["AI Engineer", "Backend Developer", "LLM Engineer"])
+    run(bot.on_filter_button(make_update(uid=1, data="f:kwrm:1"), make_ctx()))
+    assert Filters.from_json(db.get_user(1)["filters"]).keywords == ["AI Engineer", "LLM Engineer"]
+    run(bot.on_filter_button(make_update(uid=1, data="f:kwrm:9"), make_ctx()))   # stale index: no-op
+    assert len(Filters.from_json(db.get_user(1)["filters"]).keywords) == 2
+
+
+def test_add_resume_suggestions_button():
+    active(1, keywords=["Java Developer"])
+    run(bot.on_document(make_update(uid=1, document=doc(SAMPLE_RESUME.encode())), make_ctx()))
+    run(bot.on_filter_button(make_update(uid=1, data="f:kwsug"), make_ctx()))
+    kws = Filters.from_json(db.get_user(1)["filters"]).keywords
+    assert kws[0] == "Java Developer" and "AI Engineer" in kws and len(kws) <= 10
+
+
+def test_titles_limit():
+    from app.filters import MAX_KEYWORDS
+    f = Filters(keywords=[f"T{i}" for i in range(MAX_KEYWORDS)])
+    with pytest.raises(ValueError, match="max"):
+        bot.apply_text_setting(f, "kwadd", "New One")
+    f = Filters(keywords=[f"T{i}" for i in range(MAX_KEYWORDS - 1)])
+    msg = bot.apply_text_setting(f, "kwadd", "A, B")
+    assert f.keywords[-1] == "A" and "skipped" in msg and len(f.keywords) == MAX_KEYWORDS
+
+
+def test_addtitle_and_titles_commands():
+    active(1, keywords=["AI Engineer"])
+    run(bot._quick_setting("kwadd", "")(make_update(uid=1), make_ctx(args=["ML", "Engineer,", "SDE"])))
+    assert Filters.from_json(db.get_user(1)["filters"]).keywords == ["AI Engineer", "ML Engineer", "SDE"]
+    ctx = make_ctx()
+    run(bot.cmd_titles(make_update(uid=1), ctx))
+    assert "ML Engineer" in ctx.bot.sent[-1].text
+    names = [c for c, _ in bot.COMMANDS]
+    assert "titles" in names and "addtitle" in names
+
+
+def test_network_errors_logged_as_one_line(caplog):
+    from telegram.error import NetworkError
+    ctx = SimpleNamespace(error=NetworkError("Temporary failure in name resolution"))
+    with caplog.at_level("WARNING"):
+        run(bot.on_error(None, ctx))
+    rec = [r for r in caplog.records if "network problem" in r.message]
+    assert rec and rec[0].levelname == "WARNING" and rec[0].exc_info is None
 
 
 def test_bad_text_keeps_waiting():

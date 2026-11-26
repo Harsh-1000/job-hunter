@@ -22,7 +22,7 @@ POSTED = {"r3600": "Past hour", "r21600": "Past 6 hours", "r86400": "Past 24 hou
           "r604800": "Past week", "r2592000": "Past month"}
 
 SENIOR_WORDS = ["senior", "sr", "lead", "principal", "staff", "architect", "manager", "director", "head", "vp"]
-MAX_KEYWORDS = 8
+MAX_KEYWORDS = 10
 MAX_LOCATIONS = 3
 
 
@@ -165,7 +165,7 @@ def summary(f: Filters, resume_years: float | None = None) -> str:
     max_y = f.max_years_allowed(resume_years)
     quiet = f"{f.quiet_start:02d}:00–{f.quiet_end:02d}:00" if f.quiet_start is not None else "Off"
     return "\n".join([
-        f"🔎 Keywords: {', '.join(f.keywords) or '— (set some!)'}",
+        f"🔎 Job titles / keywords: {', '.join(f.keywords) or '— (set some!)'}",
         f"📍 Location: {', '.join(f.locations) or 'India'}",
         f"🕒 Posted: {POSTED.get(f.posted, f.posted)}",
         f"🎓 Experience level: {names(f.experience_levels, EXPERIENCE_LEVELS)}",

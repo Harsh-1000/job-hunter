@@ -36,7 +36,9 @@ I watch LinkedIn for new jobs that fit <b>your</b> resume and send them the mome
 <b>Commands</b>
 /scan – search right now
 /filters – all filters
-/keywords AI Engineer, GenAI Engineer – set keywords
+/titles – add / remove job titles (search keywords)
+/addtitle ML Engineer, Python Developer – add titles
+/keywords AI Engineer, GenAI Engineer – replace all titles
 /location India, Remote – set locations
 /threshold 20 – only send jobs with match ≥ 20%
 /years 2.5 – set your experience
@@ -75,13 +77,14 @@ INTRO_PAGES: list[tuple[str, str]] = [
      "Send a new file any time to replace it. Tap <b>📄 My resume</b> to see what I found."),
     ("⚙️ Step 2: Set your filters",
      "Tap <b>⚙️ Filters</b>. The same filters LinkedIn has:\n"
-     "🔎 Keywords (several, e.g. <i>AI Engineer, GenAI Engineer</i>)\n"
+     "🔎 Job titles / keywords: add or remove as many as you like (up to 10)\n"
      "📍 Location · 🕒 Date posted (1 h / 6 h / 24 h / week)\n"
      "🎓 Experience level · 📄 Job type · 🏠 On-site / Remote / Hybrid · ⚡ Easy Apply\n\n"
      "Plus extra filters of mine:\n"
      "🎯 Match threshold · 🧮 Max years a job may ask · 🚫 Skip title words (senior, lead…)\n"
      "🏢 Skip companies · 👥 Max applicants · 🌙 Quiet hours (no pings at night)\n\n"
-     "Quick commands: <code>/keywords AI Engineer, Backend Developer</code> · <code>/location India</code>"),
+     "Quick commands: <code>/addtitle ML Engineer, Python Developer</code> · <code>/titles</code> · "
+     "<code>/location India</code>"),
     ("🎯 Step 3: The match %",
      "Each job gets a score from 0 to 100:\n\n"
      "• <b>65%</b>: how many of the skills the job asks for are on your resume\n"
@@ -195,14 +198,14 @@ def filters_text(f: Filters, resume_years: float | None) -> str:
 
 def filters_kb(f: Filters) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [B("🔎 Keywords", callback_data="f:kw"), B("📍 Location", callback_data="f:loc")],
-        [B("🕒 Date posted", callback_data="f:posted"), B("🎓 Experience level", callback_data="f:exp")],
-        [B("📄 Job type", callback_data="f:jt"), B("🏠 On-site/Remote", callback_data="f:wt")],
+        [B("🔎 Job titles / keywords", callback_data="f:kw")],
+        [B("📍 Location", callback_data="f:loc"), B("🕒 Date posted", callback_data="f:posted")],
+        [B("🎓 Experience level", callback_data="f:exp"), B("📄 Job type", callback_data="f:jt")],
+        [B("🏠 On-site/Remote", callback_data="f:wt"), B(f"⚡ Easy Apply only: {'ON' if f.easy_apply else 'off'}", callback_data="f:ea")],
         [B("🎯 Match threshold", callback_data="f:thr"), B("🧮 Max years asked", callback_data="f:maxy")],
         [B("👤 My experience", callback_data="f:myy"), B("👥 Max applicants", callback_data="f:apps")],
         [B("🚫 Skip title words", callback_data="f:excl"), B("🏢 Skip companies", callback_data="f:comp")],
-        [B(f"⚡ Easy Apply only: {'ON' if f.easy_apply else 'off'}", callback_data="f:ea"),
-         B("🌙 Quiet hours", callback_data="f:quiet")],
+        [B("🌙 Quiet hours", callback_data="f:quiet")],
         [B("♻️ Reset", callback_data="f:reset"), B("✅ Done", callback_data="f:done")],
     ])
 
@@ -243,10 +246,35 @@ def maxyears_kb(current: float | None) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([btns[0:5], btns[5:10], [B("⬅️ Back", callback_data="f:menu")]])
 
 
+def keywords_text(f: Filters, p: ResumeProfile | None) -> str:
+    from .filters import MAX_KEYWORDS
+    lines = [f"<b>🔎 Job titles / keywords</b> ({len(f.keywords)}/{MAX_KEYWORDS})",
+             "I run one LinkedIn search per title (per location).", ""]
+    lines += [f"• {e(k)}" for k in f.keywords] or ["— none yet —"]
+    extra = [s for s in (p.suggested_keywords if p else []) if s.lower() not in {k.lower() for k in f.keywords}]
+    if extra:
+        lines += ["", f"📄 From your resume, not added yet: {e(', '.join(extra))}"]
+    lines += ["", "<i>Tap ❌ to remove a title, ➕ to add more.</i>"]
+    return "\n".join(lines)
+
+
+def keywords_kb(f: Filters, p: ResumeProfile | None) -> InlineKeyboardMarkup:
+    rm = [B(f"❌ {k[:28]}", callback_data=f"f:kwrm:{i}") for i, k in enumerate(f.keywords)]
+    rows = [rm[i:i + 2] for i in range(0, len(rm), 2)]
+    rows.append([B("➕ Add titles", callback_data="f:kwadd"), B("✏️ Replace all", callback_data="f:kwset")])
+    if p and any(s.lower() not in {k.lower() for k in f.keywords} for s in p.suggested_keywords):
+        rows.append([B("📄 Add resume suggestions", callback_data="f:kwsug")])
+    rows.append([B("⬅️ Back to filters", callback_data="f:menu")])
+    return InlineKeyboardMarkup(rows)
+
+
 CANCEL_KB = InlineKeyboardMarkup([[B("✖️ Cancel", callback_data="f:menu")]])
 
 PROMPTS = {
-    "kw": "🔎 Send your <b>search keywords</b>, separated by commas (max 8).\n"
+    "kwadd": "➕ Send the <b>job titles to add</b>, separated by commas.\n"
+             "e.g. <code>ML Engineer, Python Developer, Full Stack Developer</code>",
+    "kw": "✏️ Send your <b>full list of job titles / keywords</b>, separated by commas (max 10). "
+          "This replaces the current list.\n"
           "e.g. <code>AI Engineer, Generative AI Engineer, Backend Developer</code>",
     "loc": "📍 Send <b>locations</b>, separated by commas (max 3).\n"
            "e.g. <code>India</code> or <code>Bengaluru, Noida, Remote</code>",
@@ -279,7 +307,7 @@ def resume_text(p: ResumeProfile, f: Filters) -> str:
 
 
 def resume_kb(has_resume: bool) -> InlineKeyboardMarkup:
-    rows = [[B("✅ Use suggested keywords", callback_data="r:usekw"), B("✏️ Edit keywords", callback_data="f:kw")],
+    rows = [[B("✅ Use suggested keywords", callback_data="r:usekw"), B("✏️ Edit job titles", callback_data="f:kw")],
             [B("👤 Set my years", callback_data="f:myy"), B("🔍 Find jobs now", callback_data="s:scan")]]
     if has_resume:
         rows.append([B("🗑 Delete my resume", callback_data="r:delete")])

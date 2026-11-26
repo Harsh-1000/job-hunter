@@ -180,13 +180,17 @@ data/users/<telegram_user_id>/      0700
 
 **Main menu** (persistent keyboard): 🔍 Find jobs now · ⚙️ Filters · 📄 My resume · 📊 Status · ⭐ Saved · 💡 Insights · ⏯ Pause / Resume · 🧹 Clear chat · ❓ Help
 
-**Commands**: `/start /intro (/tour /guide) /help /scan /filters /resume (/cv) /keywords … /location … /threshold N /years N /saved (/applied) /insights /status /pause /clear /deleteme`. Admin only: `/users /approve <id> /block <id>`.
+**Commands**: `/start /intro (/tour /guide) /help /scan /filters /resume (/cv) /titles /addtitle … /keywords … /location … /threshold N /years N /saved (/applied) /insights /status /pause /clear /deleteme`. Admin only: `/users /approve <id> /block <id>`.
 
+* **Job titles menu** (⚙️ Filters → 🔎 Job titles / keywords, or `/titles`): it lists the current titles with ❌ to remove
+  each one, ➕ Add titles (appends, case-insensitive dedupe), ✏️ Replace all, and 📄 Add resume suggestions. Up to
+  `MAX_KEYWORDS` = 10 titles. `/addtitle A, B` adds and `/keywords A, B` replaces.
 * **Filters menu** (inline):
   * multi-select toggles for experience level, job type and work type;
   * single-select for date posted;
   * presets plus a custom value for the threshold and max years;
   * free-text prompts for keywords, locations, excluded words and companies, max applicants, quiet hours and your years.
+* **Network blips** (Telegram unreachable for a moment) are logged as one WARNING line, not a traceback.
 * **Access**: `ACCESS_MODE=approval` (default). A new user is `pending`, and admins get ✅ Approve / 🚫 Block buttons; the user is told when they're approved. The first user ever becomes admin when `ADMIN_IDS` is empty. `open` mode lets anyone in, up to `MAX_USERS`.
 * **Clear chat**: every message the bot sends, and every message the user sends, is recorded in `messages`. 🧹 offers *Clear everything* or *Clear but keep job alerts*. It deletes in batches of 100 with `deleteMessages`, then sends a fresh menu. Telegram only lets bots delete messages from the **last 48 h**; older ones stay, and the user can use Telegram's own "Clear history" for those.
 * **Guided tour** (`/intro`, also offered as a 📖 Take the tour button after /start, approval and /help):
