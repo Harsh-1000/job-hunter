@@ -64,6 +64,20 @@ def _text(node) -> str:
     return re.sub(r"\s+", " ", node.get_text(" ", strip=True)).strip() if node else ""
 
 
+AGE_UNITS = {"second": 1 / 60, "minute": 1, "hour": 60, "day": 1440, "week": 10080, "month": 43200, "year": 525600}
+
+
+def posted_age_minutes(text: str) -> float | None:
+    """'9 minutes ago' -> 9, 'Reposted 2 hours ago' -> 120, 'Just now' -> 0; None if unknown."""
+    t = (text or "").lower()
+    if "just now" in t or "moments ago" in t:
+        return 0.0
+    m = re.search(r"(\d+)\s*(second|minute|hour|day|week|month|year)s?\s+ago", t)
+    if not m:
+        return None
+    return int(m.group(1)) * AGE_UNITS[m.group(2)]
+
+
 def applicants_count(text: str) -> int | None:
     """'Over 200 applicants' -> 200, 'Be among the first 25 applicants' -> 25, '35 applicants' -> 35."""
     m = re.search(r"(\d[\d,]*)\s*(?:\+\s*)?applicants?", text or "", re.I)

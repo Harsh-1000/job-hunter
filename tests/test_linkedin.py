@@ -97,3 +97,12 @@ def test_400_past_last_page_is_empty():
 
 def test_detail_url():
     assert DETAIL_URL.format(id="123").endswith("/jobPosting/123")
+
+
+@pytest.mark.parametrize("text,minutes", [
+    ("9 minutes ago", 9), ("1 minute ago", 1), ("2 hours ago", 120), ("Reposted 3 hours ago", 180),
+    ("1 day ago", 1440), ("2 weeks ago", 20160), ("30 seconds ago", 0.5), ("Just now", 0), ("", None), ("soon", None),
+])
+def test_posted_age_minutes(text, minutes):
+    from app.linkedin import posted_age_minutes
+    assert posted_age_minutes(text) == minutes

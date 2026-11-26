@@ -18,7 +18,9 @@ EXPERIENCE_LEVELS = {"1": "Internship", "2": "Entry level", "3": "Associate", "4
 JOB_TYPES = {"F": "Full-time", "P": "Part-time", "C": "Contract", "T": "Temporary", "I": "Internship",
              "V": "Volunteer", "O": "Other"}
 WORK_TYPES = {"1": "On-site", "2": "Remote", "3": "Hybrid"}
-POSTED = {"r3600": "Past hour", "r21600": "Past 6 hours", "r86400": "Past 24 hours",
+LIVE = "live"            # default: only jobs posted in the last LIVE_MAX_AGE_MINUTES
+LIVE_SEARCH_WINDOW = "r3600"   # LinkedIn window searched in live mode; the age limit is applied by the bot
+POSTED = {LIVE: "⚡ Just posted (live)", "r3600": "Past hour", "r21600": "Past 6 hours", "r86400": "Past 24 hours",
           "r604800": "Past week", "r2592000": "Past month"}
 
 SENIOR_WORDS = ["senior", "sr", "lead", "principal", "staff", "architect", "manager", "director", "head", "vp"]
@@ -30,7 +32,7 @@ MAX_LOCATIONS = 3
 class Filters:
     keywords: list[str] = field(default_factory=list)
     locations: list[str] = field(default_factory=lambda: ["India"])
-    posted: str = "r86400"
+    posted: str = LIVE
     experience_levels: list[str] = field(default_factory=lambda: ["2", "3", "4"])
     job_types: list[str] = field(default_factory=list)      # empty = any
     work_types: list[str] = field(default_factory=list)     # empty = any
@@ -94,7 +96,8 @@ class Query:
         return hashlib.sha1(raw.encode()).hexdigest()[:16]
 
     def params(self, start: int = 0) -> dict[str, str | int]:
-        p: dict[str, str | int] = {"keywords": self.keyword, "location": self.location, "f_TPR": self.posted,
+        window = LIVE_SEARCH_WINDOW if self.posted == LIVE else self.posted
+        p: dict[str, str | int] = {"keywords": self.keyword, "location": self.location, "f_TPR": window,
                                    "sortBy": "DD", "start": start}
         if self.experience_levels:
             p["f_E"] = ",".join(sorted(self.experience_levels))
@@ -105,6 +108,11 @@ class Query:
         if self.easy_apply:
             p["f_AL"] = "true"
         return p
+
+
+def live_minutes() -> int:
+    from .config import settings
+    return settings.live_max_age_minutes
 
 
 def queries_for(f: Filters) -> list[Query]:
@@ -167,7 +175,8 @@ def summary(f: Filters, resume_years: float | None = None) -> str:
     return "\n".join([
         f"🔎 Job titles / keywords: {', '.join(f.keywords) or '— (set some!)'}",
         f"📍 Location: {', '.join(f.locations) or 'India'}",
-        f"🕒 Posted: {POSTED.get(f.posted, f.posted)}",
+        f"🕒 Posted: {POSTED.get(f.posted, f.posted)}" + (f" — only jobs ≤ {live_minutes()} min old"
+                                                          if f.posted == LIVE else ""),
         f"🎓 Experience level: {names(f.experience_levels, EXPERIENCE_LEVELS)}",
         f"📄 Job type: {names(f.job_types, JOB_TYPES)}",
         f"🏠 Work type: {names(f.work_types, WORK_TYPES)}",

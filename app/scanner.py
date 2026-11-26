@@ -15,14 +15,14 @@ import httpx
 
 from . import db
 from .config import settings
-from .filters import Filters, Query, queries_for
+from .filters import LIVE, Filters, Query, queries_for
 from .linkedin import Job, LinkedInClient, RateLimited
 from .matcher import evaluate, excluded_word
 from .resume import ResumeProfile
 
 log = logging.getLogger(__name__)
 
-POSTED_HOURS = {"r3600": 1, "r21600": 6, "r86400": 24, "r604800": 168, "r2592000": 720}
+POSTED_HOURS = {"live": 1, "r3600": 1, "r21600": 6, "r86400": 24, "r604800": 168, "r2592000": 720}
 MAX_DETAILS_PER_CYCLE = 60
 
 
@@ -74,8 +74,22 @@ def clear_cooldown() -> None:
 
 # ---------------- evaluation (also used when a user changes filters / resume) ----------------
 
+def too_old(row, f: Filters) -> str:
+    """In ⚡ live mode, a reason if the job was posted longer ago than LIVE_MAX_AGE_MINUTES."""
+    if f.posted != LIVE:
+        return ""
+    age = db.age_minutes(row["posted_at"])
+    if age is None or age <= settings.live_max_age_minutes:
+        return ""
+    return f"posted {row['posted'] or 'too long ago'} (live mode: ≤ {settings.live_max_age_minutes} min)"
+
+
 def judge(user_id: int, row, f: Filters, profile: ResumeProfile | None) -> str:
     """Score one delivery row that has its job details; store the result. Returns new status."""
+    old = too_old(row, f)
+    if old:
+        db.set_result(user_id, row["job_id"], "rejected", None, old, "old")
+        return "rejected"
     if db.is_duplicate(user_id, row["job_id"], row["title"], row["company"]):
         db.set_result(user_id, row["job_id"], "rejected", None, "same role already sent (other city)", "duplicate")
         return "rejected"
@@ -84,6 +98,22 @@ def judge(user_id: int, row, f: Filters, profile: ResumeProfile | None) -> str:
     db.set_result(user_id, row["job_id"], status, m.score, m.reason, m.code,
                   {"match": m.to_dict(), "keyword": row["keyword"]})
     return status
+
+
+def migrate_live_default() -> int:
+    """One-time: users still on the old 24 h default switch to ⚡ live. Returns how many changed."""
+    if db.get_meta("migrated_live_default") == "1":
+        return 0
+    changed = 0
+    for u in db.users():
+        f = Filters.from_json(u["filters"])
+        if f.posted == "r86400":
+            f.posted = LIVE
+            db.update_user(u["id"], filters=f.to_json())
+            reevaluate_user(u["id"])
+            changed += 1
+    db.set_meta("migrated_live_default", "1")
+    return changed
 
 
 def reevaluate_user(user_id: int) -> int:
@@ -166,7 +196,12 @@ class Scanner:
             for uid, (f, profile) in ctx.items():
                 for row in db.deliveries(uid, ("waiting",)):
                     if row["detail_status"] == "none":
-                        # cheap title/company reject before spending a request on the description
+                        # cheap rejects before spending a request on the description
+                        old = too_old(row, f)
+                        if old:
+                            db.set_result(uid, row["job_id"], "rejected", None, old, "old")
+                            res.rejected += 1
+                            continue
                         w = excluded_word(row["title"] or "", f.exclude_words)
                         if w:
                             db.set_result(uid, row["job_id"], "rejected", None, f"title has '{w}'", "title")

@@ -12,7 +12,8 @@ class FakeLinkedIn:
     """listings: keyword -> list[(id, title, company)]; descriptions: id -> text."""
     instances: list["FakeLinkedIn"] = []
 
-    def __init__(self, listings=None, descriptions=None, rate_limit_after=None):
+    def __init__(self, listings=None, descriptions=None, rate_limit_after=None, posted="5 minutes ago"):
+        self.posted = posted
         self.listings = listings or {}
         self.descriptions = descriptions or {}
         self.rate_limit_after = rate_limit_after
@@ -27,7 +28,7 @@ class FakeLinkedIn:
         self._tick()
         self.searches.append((query.keyword, query.location, start))
         rows = self.listings.get(query.keyword, [])[start:start + 10]
-        return [Job(id=i, title=t, company=c, location="India", posted="1 hour ago", search_keyword=query.keyword)
+        return [Job(id=i, title=t, company=c, location="India", posted=self.posted, search_keyword=query.keyword)
                 for i, t, c in rows]
 
     async def details(self, job):

@@ -61,7 +61,7 @@ def onboarding(name: str) -> str:
 INTRO_PAGES: list[tuple[str, str]] = [
     ("🎯 What is Job Hunter?",
      "I'm your personal LinkedIn job scout.\n\n"
-     "Every few minutes I search LinkedIn for <b>new</b> jobs (newest first), read each job description, "
+     "Every 3 minutes I search LinkedIn for jobs <b>posted in the last few minutes</b>, read each description, "
      "compare it with <b>your resume</b>, and message you only the ones that fit, with a "
      "<b>match %</b>.\n\n"
      "✅ No LinkedIn account or login needed\n"
@@ -78,7 +78,8 @@ INTRO_PAGES: list[tuple[str, str]] = [
     ("⚙️ Step 2: Set your filters",
      "Tap <b>⚙️ Filters</b>. The same filters LinkedIn has:\n"
      "🔎 Job titles / keywords: add or remove as many as you like (up to 10)\n"
-     "📍 Location · 🕒 Date posted (1 h / 6 h / 24 h / week)\n"
+     "📍 Location · 🕒 Date posted: default <b>⚡ Just posted</b> (only jobs a few minutes old), "
+     "or past hour / 6 h / 24 h / week / month\n"
      "🎓 Experience level · 📄 Job type · 🏠 On-site / Remote / Hybrid · ⚡ Easy Apply\n\n"
      "Plus extra filters of mine:\n"
      "🎯 Match threshold · 🧮 Max years a job may ask · 🚫 Skip title words (senior, lead…)\n"

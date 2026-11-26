@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS jobs (
     id TEXT PRIMARY KEY,
     title TEXT, company TEXT, location TEXT, url TEXT, posted TEXT, posted_date TEXT,
+    posted_at TEXT,                              -- when LinkedIn says it was posted (UTC), from "x min ago"
     description TEXT, criteria TEXT, applicants TEXT, seniority TEXT, employment_type TEXT,
     detail_status TEXT NOT NULL DEFAULT 'none',  -- none | ok | failed
     detail_attempts INTEGER NOT NULL DEFAULT 0,
@@ -87,6 +88,23 @@ def init() -> None:
     with conn() as c:
         c.execute("PRAGMA journal_mode=WAL")
         c.executescript(SCHEMA)
+        # migrations for databases created by older versions
+        cols = {r[1] for r in c.execute("PRAGMA table_info(jobs)")}
+        if "posted_at" not in cols:
+            c.execute("ALTER TABLE jobs ADD COLUMN posted_at TEXT")
+
+
+def posted_at_from(text: str, seen: datetime | None = None) -> str | None:
+    from .linkedin import posted_age_minutes
+    age = posted_age_minutes(text)
+    return iso((seen or now()) - timedelta(minutes=age)) if age is not None else None
+
+
+def age_minutes(posted_at: str | None) -> float | None:
+    if not posted_at:
+        return None
+    t = datetime.strptime(posted_at, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+    return (now() - t).total_seconds() / 60
 
 
 # ---------------- meta ----------------
@@ -165,18 +183,20 @@ def delete_user(user_id: int) -> None:
 def upsert_cards(cards: Iterable) -> None:
     with conn() as c:
         c.executemany(
-            """INSERT INTO jobs (id, title, company, location, url, posted, posted_date, first_seen)
-               VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING""",
-            [(j.id, j.title, j.company, j.location, j.url, j.posted, j.posted_date, iso()) for j in cards])
+            """INSERT INTO jobs (id, title, company, location, url, posted, posted_date, posted_at, first_seen)
+               VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING""",
+            [(j.id, j.title, j.company, j.location, j.url, j.posted, j.posted_date, posted_at_from(j.posted), iso())
+             for j in cards])
 
 
 def save_details(job) -> None:
     with conn() as c:
         c.execute(
             """UPDATE jobs SET description=?, criteria=?, applicants=?, seniority=?, employment_type=?,
-                   posted=COALESCE(NULLIF(?, ''), posted), detail_status='ok' WHERE id=?""",
+                   posted=COALESCE(NULLIF(?, ''), posted), posted_at=COALESCE(posted_at, ?),
+                   detail_status='ok' WHERE id=?""",
             (job.description, json.dumps(job.criteria), job.applicants, job.seniority, job.employment_type,
-             job.posted, job.id))
+             job.posted, posted_at_from(job.posted), job.id))
 
 
 def detail_failed(job_id: str) -> int:
@@ -247,7 +267,7 @@ def add_waiting(user_id: int, job_ids: Iterable[str], keyword: str) -> int:
 def deliveries(user_id: int, statuses: tuple[str, ...], limit: int = 500,
                since_hours: float | None = None) -> list[sqlite3.Row]:
     q = (f"""SELECT d.*, j.title, j.company, j.location, j.url, j.posted, j.applicants, j.seniority,
-                    j.employment_type, j.description, j.detail_status
+                    j.employment_type, j.description, j.detail_status, j.posted_at
              FROM deliveries d JOIN jobs j ON j.id=d.job_id
              WHERE d.user_id=? AND d.status IN ({','.join('?' * len(statuses))})""")
     args: list = [user_id, *statuses]
@@ -264,7 +284,7 @@ def get_delivery(user_id: int, job_id: str) -> sqlite3.Row | None:
     with conn() as c:
         return c.execute(
             """SELECT d.*, j.title, j.company, j.location, j.url, j.posted, j.applicants, j.seniority,
-                      j.employment_type, j.description, j.detail_status
+                      j.employment_type, j.description, j.detail_status, j.posted_at
                FROM deliveries d JOIN jobs j ON j.id=d.job_id WHERE d.user_id=? AND d.job_id=?""",
             (user_id, job_id)).fetchone()
 

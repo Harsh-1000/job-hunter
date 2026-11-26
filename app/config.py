@@ -35,7 +35,9 @@ class Settings:
     max_users: int = _int("MAX_USERS", 50)
 
     # How often the scanner runs. LinkedIn rate-limits fast clients, so there is a hard floor.
-    scan_every_minutes: float = max(2.0, _float("SCAN_EVERY_MINUTES", 5))
+    scan_every_minutes: float = max(2.0, _float("SCAN_EVERY_MINUTES", 3))
+    # "⚡ Just posted" (the default date filter): only jobs at most this old are sent.
+    live_max_age_minutes: int = max(5, _int("LIVE_MAX_AGE_MINUTES", 30))
     pages_first_scan: int = _int("PAGES_FIRST_SCAN", 3)   # backlog pages for a brand-new search
     max_per_cycle: int = _int("MAX_PER_CYCLE", 10)         # job messages per user per cycle
     manual_scan_cooldown_s: int = _int("MANUAL_SCAN_COOLDOWN_SECONDS", 120)

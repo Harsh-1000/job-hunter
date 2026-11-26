@@ -126,3 +126,77 @@ def test_no_resume_jobs_still_sent_without_score():
     run(Scanner(factory(listings=LISTING, descriptions=DESCS)))
     rows = db.deliveries(1, ("pending",))
     assert rows and all(r["score"] is None for r in rows)
+
+
+# ---------------- ⚡ live mode (default): only just-posted jobs ----------------
+
+def test_live_is_default_and_searches_past_hour():
+    from app.filters import Filters, queries_for
+    q = queries_for(Filters(keywords=["AI Engineer"]))[0]
+    assert q.posted == "live" and q.params()["f_TPR"] == "r3600"
+
+
+def test_live_mode_sends_only_fresh_jobs_and_skips_old_without_fetching():
+    add_user(1)
+    listing = {"AI Engineer": [("1", "AI Engineer", "Acme"), ("2", "AI Engineer", "Beta")]}
+
+    class Mixed(FakeLinkedIn):
+        async def search(self, query, start=0):
+            jobs = await super().search(query, start)
+            for j in jobs:
+                j.posted = "4 minutes ago" if j.id == "1" else "52 minutes ago"
+            return jobs
+    run(Scanner(lambda: Mixed(listings=listing, descriptions={"1": GOOD, "2": GOOD})))
+    assert [r["job_id"] for r in db.deliveries(1, ("pending",))] == ["1"]
+    old = db.deliveries(1, ("rejected",))[0]
+    assert old["job_id"] == "2" and old["reason_code"] == "old" and "52 minutes ago" in old["reason"]
+    assert FakeLinkedIn.instances[-1].detail_calls == ["1"]       # old job: no description request
+
+
+def test_wider_window_keeps_older_jobs():
+    add_user(1, posted="r86400")
+    run(Scanner(factory(listings=LISTING, descriptions=DESCS, posted="10 hours ago")))
+    assert [r["job_id"] for r in db.deliveries(1, ("pending",))] == ["1"]
+
+
+def test_unknown_age_is_not_dropped():
+    add_user(1)
+    run(Scanner(factory(listings=LISTING, descriptions=DESCS, posted="")))
+    assert [r["job_id"] for r in db.deliveries(1, ("pending",))] == ["1"]
+
+
+def test_switching_to_live_drops_queued_old_jobs():
+    add_user(1, posted="r86400")
+    run(Scanner(factory(listings=LISTING, descriptions=DESCS, posted="3 hours ago")))
+    assert db.deliveries(1, ("pending",))
+    db.update_user(1, filters=Filters(keywords=["AI Engineer"]).to_json())   # back to live default
+    assert reevaluate_user(1) == 0
+
+
+def test_migration_moves_old_default_users_to_live_once():
+    from app.scanner import migrate_live_default
+    add_user(1, posted="r86400")
+    add_user(2, posted="r604800")                 # explicitly chose a week: untouched
+    assert migrate_live_default() == 1
+    assert Filters.from_json(db.get_user(1)["filters"]).posted == "live"
+    assert Filters.from_json(db.get_user(2)["filters"]).posted == "r604800"
+    db.update_user(1, filters=Filters(keywords=["x"], posted="r86400").to_json())
+    assert migrate_live_default() == 0             # only once: a later choice of 24 h is respected
+
+
+def test_posted_at_stored_from_card_text():
+    db.upsert_user(1, 10)
+    from app.linkedin import Job
+    db.upsert_cards([Job(id="7", title="t", company="c", location="l", posted="10 minutes ago")])
+    assert 9.5 < db.age_minutes(db.get_job("7")["posted_at"]) < 10.5
+
+
+def test_db_migration_adds_posted_at_to_old_databases():
+    with db.conn() as c:
+        c.executescript("DROP TABLE jobs; CREATE TABLE jobs (id TEXT PRIMARY KEY, title TEXT, company TEXT, "
+                        "location TEXT, url TEXT, posted TEXT, posted_date TEXT, description TEXT, criteria TEXT, "
+                        "applicants TEXT, seniority TEXT, employment_type TEXT, detail_status TEXT NOT NULL "
+                        "DEFAULT 'none', detail_attempts INTEGER NOT NULL DEFAULT 0, first_seen TEXT NOT NULL);")
+    db.init()
+    with db.conn() as c:
+        assert "posted_at" in {r[1] for r in c.execute("PRAGMA table_info(jobs)")}

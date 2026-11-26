@@ -11,7 +11,7 @@
 1. A user opens the bot and sends `/start`. Depending on `ACCESS_MODE`, they're either let in straight away or wait for an admin to approve them.
 2. They send their **resume** (PDF / DOCX / TXT). The bot pulls out their skills, years of experience and job titles, and suggests search keywords.
 3. They set **filters** from the ⚙️ menu: keywords, locations, date posted, experience level, job type, on-site/remote/hybrid, Easy Apply, **match threshold**, max years a job may ask for, title words / companies to skip, max applicants, and quiet hours.
-4. Every `SCAN_EVERY_MINUTES` (default 5), the bot searches LinkedIn for every user's keywords × locations, newest first. It scores each new job against that user's resume and sends the ones at or above their threshold (default 0 = everything).
+4. Every `SCAN_EVERY_MINUTES` (default **3**), the bot searches LinkedIn for every user's keywords × locations, newest first. It scores each new job against that user's resume and sends the ones at or above their threshold (default 0 = everything).
 5. Each alert shows the match %, the skills they have, the skills the job also wants, and buttons: 🔗 Open · ✅ Applied · ⭐ Save · 🙈 Hide.
 
 ---
@@ -65,7 +65,7 @@
 
 | Filter | Param | Values |
 |---|---|---|
-| Date posted | `f_TPR` | `r3600` 1 h · `r21600` 6 h · `r86400` 24 h · `r604800` week · `r2592000` month |
+| Date posted | `f_TPR` | **`live` (default) → searches `r3600`, and the bot keeps only jobs ≤ `LIVE_MAX_AGE_MINUTES` (30) old** · `r3600` 1 h · `r21600` 6 h · `r86400` 24 h · `r604800` week · `r2592000` month |
 | Experience level | `f_E` | 1 Internship · 2 Entry · 3 Associate · 4 Mid-Senior · 5 Director · 6 Executive |
 | Job type | `f_JT` | F Full-time · P Part-time · C Contract · T Temporary · I Internship · V Volunteer · O Other |
 | Work type | `f_WT` | 1 On-site · 2 Remote · 3 Hybrid |
@@ -103,12 +103,22 @@ If a user changes their filters or resume, `reevaluate_user()` re-scores their r
 
 ---
 
+### ⚡ Just posted (live) — the default
+The bot's main job is to send jobs **the moment they're posted**:
+
+* **Date posted defaults to `live`.** LinkedIn is searched for the past hour, newest first, every 3 minutes, and only jobs whose LinkedIn age is ≤ 30 min are sent. In practice they arrive minutes after posting, limited by LinkedIn's indexing and the 3-minute interval.
+* **A brand-new search doesn't flood you with old jobs.** Anything older than 30 min is rejected (`old`) without fetching its description.
+* **Users can widen it** in ⚙️ Filters → 🕒 Date posted (past hour / 6 h / 24 h / week / month), and then the age cut-off is off.
+* **One-time migration on start** (`migrate_live_default`): users still on the old 24 h default are moved to live, and their queued older jobs are dropped.
+* **Quiet at night** is expected, because few jobs are posted then.
+
 ## 5. Matching & score (`app/matcher.py`)
 
 **Hard filters**: a job is skipped, with the reason stored, if any of these apply:
 
 | Code | Rule |
 |---|---|
+| `old` | ⚡ live mode (the default): the job was posted more than `LIVE_MAX_AGE_MINUTES` ago, judged from LinkedIn's "x minutes ago" and stored as `jobs.posted_at`. This is checked **before** the description is fetched. Jobs of unknown age are kept |
 | `title` | title contains an excluded word (whole word; default: senior, sr, lead, principal, staff, architect, manager, director, head, vp) |
 | `company` | company matches an excluded company |
 | `applicants` | more applicants than the user's max |
@@ -164,7 +174,7 @@ data/users/<telegram_user_id>/      0700
 | Table | Key | What |
 |---|---|---|
 | `users` | `id` (Telegram user ID) | chat_id, name, `status` pending/active/blocked, `is_admin`, `filters` JSON, `resume` JSON, `paused`, `last_manual_scan` |
-| `jobs` | `id` (LinkedIn job ID) | title, company, location, url, posted, description, criteria, applicants, seniority, `detail_status` none/ok/failed |
+| `jobs` | `id` (LinkedIn job ID) | title, company, location, url, posted, `posted_at` (UTC, from "x min ago"), description, criteria, applicants, seniority, `detail_status` none/ok/failed |
 | `query_seen` | (`qkey`, `job_id`) | which jobs each search has returned (for paging) |
 | `query_state` | `qkey` | last run, run count |
 | `user_queries` | (`user_id`, `qkey`) | searches a user is attached to (for back-fill) |
@@ -289,7 +299,8 @@ jobhunter test | env | backup | shell
 | `ADMIN_IDS` | empty | comma-separated Telegram IDs; empty → the first /start becomes admin |
 | `ACCESS_MODE` | approval | `approval` or `open` |
 | `MAX_USERS` | 50 | cap for open mode |
-| `SCAN_EVERY_MINUTES` | 5 | min 2 |
+| `SCAN_EVERY_MINUTES` | 3 | min 2 |
+| `LIVE_MAX_AGE_MINUTES` | 30 | ⚡ Just posted: max job age (min 5) |
 | `PAGES_FIRST_SCAN` | 3 | backlog pages for a new search |
 | `MAX_PER_CYCLE` | 10 | alerts per user per cycle |
 | `MANUAL_SCAN_COOLDOWN_SECONDS` | 120 | |
