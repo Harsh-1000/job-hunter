@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# Job Hunter helper: short commands for the Docker bot. Works from anywhere (also over SSH).
+#   jobhunter help
+set -euo pipefail
+
+BOT_DIR="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+cd "$BOT_DIR"
+
+# A shell that hasn't picked up the "docker" group yet: re-run under it.
+if ! docker info >/dev/null 2>&1 && getent group docker | grep -qw "$(id -un)"; then
+    exec sg docker -c "$(printf '%q ' "$0" "$@")"
+fi
+
+export UID; export GID="$(id -g)"
+admin() { docker compose exec -T job-hunter python -m app.admin "$@"; }
+need_id() { [[ -n "${1:-}" ]] || { echo "Give the Telegram user ID, e.g.: jobhunter $CMD 123456789 (see: jobhunter users)"; exit 1; }; }
+
+CMD="${1:-help}"
+shift || true
+case "$CMD" in
+    # ---------------- health & logs
+    health|status)
+        echo "== Container"; docker compose ps --format '{{.Name}}: {{.Status}}' || true
+        if [[ -f data/heartbeat ]]; then
+            echo "== Heartbeat: $(( $(date +%s) - $(stat -c %Y data/heartbeat) ))s ago (healthy if under ~60s)"
+        fi
+        echo "== Bot stats"; admin stats 2>/dev/null || echo "   (bot not running)"
+        echo "== Disk:   $(df -h "$BOT_DIR" | tail -1 | awk '{print $4" free"}') · data: $(du -sh data 2>/dev/null | cut -f1)"
+        echo "== Uptime: $(uptime -p)"
+        echo "== Last problems"
+        grep -hE "WARNING|ERROR|CRITICAL" data/logs/bot.log 2>/dev/null | tail -n 8 || echo "   none today"
+        ;;
+    logs)    docker compose logs -f --tail "${1:-100}" ;;
+    log)     tail -n "${1:-100}" data/logs/bot.log ;;
+    errors)  grep -hE "WARNING|ERROR|CRITICAL" data/logs/bot.log* 2>/dev/null | tail -n "${1:-50}" || echo "none" ;;
+    scans)   grep -h "cycle:" data/logs/bot.log 2>/dev/null | tail -n "${1:-20}" ;;
+
+    # ---------------- users
+    users)          admin users ;;
+    approve)        need_id "${1:-}"; admin approve "$1" ;;
+    block)          need_id "${1:-}"; admin block "$1" ;;
+    make-admin)     need_id "${1:-}"; admin make-admin "$1" ;;
+    stats)          admin stats ;;
+    reset-cooldown) admin reset-cooldown ;;
+
+    # ---------------- run the bot
+    start)   docker compose up -d ;;
+    stop)    docker compose stop ;;
+    restart) docker compose restart ;;
+    rebuild) docker compose up -d --build && docker compose ps ;;      # rebuild runs all tests first
+    update)  git pull --ff-only && docker compose up -d --build && docker compose ps ;;
+    test)    if [[ -x .venv/bin/python ]]; then .venv/bin/python -m pytest -q "$@"
+             else docker build --target test -t job-hunter:test .; fi ;;
+    env)     "${EDITOR:-nano}" .env
+             read -rp "Restart the bot to apply the changes? [Y/n] " a
+             [[ "${a,,}" == "n" ]] || docker compose restart ;;
+    backup)
+        out="$HOME/jobhunter-backup-$(date +%F).tar.gz"
+        (umask 077; tar -czf "$out" .env data/jobhunter.db data/users 2>/dev/null)
+        echo "Backup: $out  (contains the bot token and users' resumes: keep it private)" ;;
+    shell)   docker compose exec job-hunter bash ;;
+
+    help|-h|--help|*)
+        [[ "$CMD" =~ ^(help|-h|--help)$ ]] || echo "Unknown command: $CMD"
+        cat <<'TXT'
+Job Hunter bot — helper commands (run from anywhere, also over SSH)
+
+ Health & logs
+   jobhunter health            container, heartbeat, stats, disk, last problems
+   jobhunter logs [N]          live output (Ctrl+C to stop)
+   jobhunter log [N]           last N lines of today's log file
+   jobhunter errors [N]        recent warnings / errors (last 7 days)
+   jobhunter scans [N]         last scan cycles (searches, new jobs, matches)
+
+ Users
+   jobhunter users             list everyone
+   jobhunter approve <id>      let a waiting user in   ·   jobhunter block <id>
+   jobhunter make-admin <id>   give admin rights
+   jobhunter stats             totals   ·   jobhunter reset-cooldown   forget a LinkedIn rate-limit pause
+
+ Bot
+   jobhunter start | stop | restart
+   jobhunter rebuild           rebuild the image (runs every test first) and restart
+   jobhunter update            git pull + rebuild
+   jobhunter test              run the test suite
+   jobhunter env               edit .env, then restart
+   jobhunter backup            save .env + database + resumes to ~/jobhunter-backup-<date>.tar.gz
+TXT
+        ;;
+esac

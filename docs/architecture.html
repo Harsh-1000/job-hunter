@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Job Hunter Architecture</title>
+<meta name="description" content="How the Job Hunter Telegram bot finds LinkedIn jobs, matches them to each user's resume and delivers them.">
+<style>
+:root {
+  --bg: #f7f7f4; --surface: #ffffff; --surface-2: #f0efe9; --text: #1d1d1b; --muted: #62625c;
+  --line: #deddd5; --accent: #2f6fdb; --accent-soft: #e5eefc; --good: #1f8a4c; --good-soft: #e3f4ea;
+  --warn: #b26b00; --warn-soft: #fbf0dc; --bad: #c0392b; --bad-soft: #f9e4e1; --code: #f1f0ea;
+  --radius: 12px; --shadow: 0 1px 2px rgba(0,0,0,.05), 0 4px 16px rgba(0,0,0,.04);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #141413; --surface: #1d1d1b; --surface-2: #262624; --text: #ecebe6; --muted: #a3a29b;
+    --line: #34342f; --accent: #7aa7f5; --accent-soft: #1c2a42; --good: #5cc98a; --good-soft: #17301f;
+    --warn: #e6a74a; --warn-soft: #36290f; --bad: #ef7d6f; --bad-soft: #3a1d19; --code: #262624;
+    --shadow: none;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #141413; --surface: #1d1d1b; --surface-2: #262624; --text: #ecebe6; --muted: #a3a29b;
+  --line: #34342f; --accent: #7aa7f5; --accent-soft: #1c2a42; --good: #5cc98a; --good-soft: #17301f;
+  --warn: #e6a74a; --warn-soft: #36290f; --bad: #ef7d6f; --bad-soft: #3a1d19; --code: #262624;
+  --shadow: none;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font: 16px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+main { max-width: 980px; margin: 0 auto; padding: 40px 16px 80px; }
+h1 { font-size: clamp(28px, 5vw, 40px); line-height: 1.15; margin: 0 0 8px; letter-spacing: -.02em; }
+h2 { font-size: 22px; margin: 56px 0 12px; letter-spacing: -.01em; }
+h3 { font-size: 17px; margin: 0 0 6px; }
+p { margin: 0 0 12px; }
+.lede { color: var(--muted); font-size: 18px; max-width: 720px; }
+code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13.5px; }
+code { background: var(--code); padding: 1px 5px; border-radius: 5px; }
+pre { background: var(--code); padding: 14px 16px; border-radius: var(--radius); overflow-x: auto; line-height: 1.5; margin: 0; }
+nav.toc { display: flex; flex-wrap: wrap; gap: 8px; margin: 24px 0 0; }
+nav.toc a {
+  color: var(--text); text-decoration: none; font-size: 14px; padding: 6px 12px;
+  border: 1px solid var(--line); border-radius: 999px; background: var(--surface);
+}
+nav.toc a:hover { border-color: var(--accent); color: var(--accent); }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px 20px; box-shadow: var(--shadow); }
+.grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+.muted { color: var(--muted); }
+.pill { display: inline-block; font-size: 12px; font-weight: 600; padding: 2px 9px; border-radius: 999px; }
+.pill.good { background: var(--good-soft); color: var(--good); }
+.pill.warn { background: var(--warn-soft); color: var(--warn); }
+.pill.bad { background: var(--bad-soft); color: var(--bad); }
+.pill.info { background: var(--accent-soft); color: var(--accent); }
+table { width: 100%; border-collapse: collapse; font-size: 14.5px; }
+th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-size: 12.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 600; }
+.table-wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
+.diagram { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px; overflow-x: auto; }
+.diagram svg { display: block; width: 100%; min-width: 640px; height: auto; }
+svg .box { fill: var(--surface-2); stroke: var(--line); }
+svg .box.accent { fill: var(--accent-soft); stroke: var(--accent); }
+svg .box.good { fill: var(--good-soft); stroke: var(--good); }
+svg .t { fill: var(--text); font: 600 14px ui-sans-serif, system-ui, sans-serif; }
+svg .s { fill: var(--muted); font: 12px ui-sans-serif, system-ui, sans-serif; }
+svg .arrow { stroke: var(--muted); stroke-width: 1.6; fill: none; marker-end: url(#arrowhead); }
+svg #arrowhead path { fill: var(--muted); }
+.steps { counter-reset: step; display: grid; gap: 10px; }
+.step { position: relative; padding-left: 46px; }
+.step::before {
+  counter-increment: step; content: counter(step); position: absolute; left: 0; top: 2px;
+  width: 30px; height: 30px; border-radius: 50%; background: var(--accent-soft); color: var(--accent);
+  font-weight: 700; display: grid; place-items: center; font-size: 14px;
+}
+.formula { font-size: 18px; text-align: center; padding: 18px; }
+.formula b { color: var(--accent); }
+.bar { height: 10px; border-radius: 6px; background: var(--surface-2); overflow: hidden; display: flex; margin: 10px 0 4px; }
+.bar span { display: block; height: 100%; }
+.tg {
+  max-width: 420px; background: var(--surface-2); border-radius: 16px; padding: 14px 16px; font-size: 14.5px; line-height: 1.55;
+  border: 1px solid var(--line);
+}
+.tg .btns { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+.tg .btns span { flex: 1; text-align: center; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 6px 4px; font-size: 13px; min-width: 70px; }
+.flow { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 14px; }
+.flow .arrow-txt { color: var(--muted); }
+footer { margin-top: 64px; color: var(--muted); font-size: 13.5px; border-top: 1px solid var(--line); padding-top: 16px; }
+@media (max-width: 560px) { h2 { margin-top: 40px; } .card { padding: 16px; } }
+</style>
+</head>
+<body>
+<main>
+  <p class="muted" style="margin-bottom:6px">@openings_radar_bot · Python 3.12 · Docker</p>
+  <h1>🎯 Job Hunter: how it works</h1>
+  <p class="lede">A Telegram bot that watches LinkedIn for new jobs and sends each user only the ones that fit <em>their</em> resume and filters, with a match % and the skills they are missing.</p>
+  <nav class="toc">
+    <a href="#overview">Overview</a><a href="#cycle">Scan cycle</a><a href="#score">Match score</a>
+    <a href="#resume">Resume &amp; folders</a><a href="#ux">Telegram UX</a><a href="#data">Data model</a>
+    <a href="#deploy">Deploy</a><a href="#tests">Tests</a><a href="#change">Making changes</a>
+  </nav>
+
+  <h2 id="overview">Overview</h2>
+  <div class="diagram" role="img" aria-label="Architecture: Telegram users talk to the bot; the scanner fetches LinkedIn, the matcher scores jobs against resumes, SQLite and per-user folders store state.">
+    <svg viewBox="0 0 900 330" xmlns="http://www.w3.org/2000/svg">
+      <defs><marker id="arrowhead" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z"/></marker></defs>
+      <rect class="box" x="10" y="40" width="150" height="80" rx="10"/>
+      <text class="t" x="85" y="74" text-anchor="middle">Telegram users</text>
+      <text class="s" x="85" y="94" text-anchor="middle">resume · filters · buttons</text>
+
+      <rect class="box accent" x="230" y="20" width="200" height="120" rx="10"/>
+      <text class="t" x="330" y="50" text-anchor="middle">bot.py + ui.py</text>
+      <text class="s" x="330" y="72" text-anchor="middle">menus, approval, upload</text>
+      <text class="s" x="330" y="90" text-anchor="middle">delivery every 60 s</text>
+      <text class="s" x="330" y="108" text-anchor="middle">Clear chat, insights</text>
+
+      <rect class="box accent" x="500" y="20" width="200" height="120" rx="10"/>
+      <text class="t" x="600" y="50" text-anchor="middle">scanner.py</text>
+      <text class="s" x="600" y="72" text-anchor="middle">every 5 min: plan → search</text>
+      <text class="s" x="600" y="90" text-anchor="middle">→ details → match → queue</text>
+      <text class="s" x="600" y="108" text-anchor="middle">cooldown on HTTP 429</text>
+
+      <rect class="box" x="760" y="40" width="130" height="80" rx="10"/>
+      <text class="t" x="825" y="74" text-anchor="middle">LinkedIn</text>
+      <text class="s" x="825" y="94" text-anchor="middle">public, no login</text>
+
+      <rect class="box" x="230" y="200" width="200" height="100" rx="10"/>
+      <text class="t" x="330" y="232" text-anchor="middle">resume.py · skills.py</text>
+      <text class="s" x="330" y="254" text-anchor="middle">PDF/DOCX/TXT → skills,</text>
+      <text class="s" x="330" y="272" text-anchor="middle">years, keyword ideas</text>
+
+      <rect class="box" x="500" y="200" width="200" height="100" rx="10"/>
+      <text class="t" x="600" y="232" text-anchor="middle">matcher.py</text>
+      <text class="s" x="600" y="254" text-anchor="middle">hard filters + score 0-100</text>
+      <text class="s" x="600" y="272" text-anchor="middle">matched / missing skills</text>
+
+      <rect class="box good" x="760" y="200" width="130" height="100" rx="10"/>
+      <text class="t" x="825" y="232" text-anchor="middle">./data</text>
+      <text class="s" x="825" y="254" text-anchor="middle">jobhunter.db</text>
+      <text class="s" x="825" y="272" text-anchor="middle">users/&lt;id&gt;/ · logs</text>
+
+      <path class="arrow" d="M160 80 H226"/>
+      <path class="arrow" d="M430 80 H496"/>
+      <path class="arrow" d="M700 80 H756"/>
+      <path class="arrow" d="M330 140 V196"/>
+      <path class="arrow" d="M600 140 V196"/>
+      <path class="arrow" d="M700 250 H756"/>
+      <path class="arrow" d="M430 250 H496"/>
+    </svg>
+  </div>
+  <div class="grid" style="margin-top:14px">
+    <div class="card"><h3>No LinkedIn account</h3><p class="muted">It uses the public <code>jobs-guest</code> endpoints that visitors who aren't signed in see. Nothing can get an account blocked.</p></div>
+    <div class="card"><h3>Shared searches</h3><p class="muted">Users with the same keyword + location + filters share one request. Each job description is fetched once and scored for everyone.</p></div>
+    <div class="card"><h3>Polite by design</h3><p class="muted">2–5 s between requests, retries on HTTP 429, then a 10→60 min cooldown. Scans run every 5 min, newest first.</p></div>
+  </div>
+
+  <h2 id="cycle">The scan cycle</h2>
+  <div class="card steps">
+    <div class="step"><h3>Plan</h3><p class="muted">For each active user: one search per keyword × location. Identical searches merge. A user joining a search that has already run gets its recent results back-filled.</p></div>
+    <div class="step"><h3>Search</h3><p class="muted">LinkedIn, newest first (<code>sortBy=DD</code>), 10 per page. Paging stops at the first already-seen job. A brand-new search reads up to 3 pages.</p></div>
+    <div class="step"><h3>Queue</h3><p class="muted">Each new job becomes a <code>waiting</code> delivery for every user of that search.</p></div>
+    <div class="step"><h3>Details</h3><p class="muted">Excluded title words are rejected first, with no request. The description is fetched once and cached, up to 60 per cycle; the rest wait.</p></div>
+    <div class="step"><h3>Match</h3><p class="muted">Duplicate check (same role in another city), then hard filters and the score. The delivery becomes <span class="pill good">pending</span> or <span class="pill bad">rejected</span> with a reason.</p></div>
+    <div class="step"><h3>Deliver</h3><p class="muted">Best score first, up to 10 per user per cycle. Paused users and quiet hours are skipped; a user who blocked the bot is auto-paused.</p></div>
+  </div>
+  <p class="muted" style="margin-top:10px">Changing filters or uploading a new resume re-scores recent jobs from the cache straight away, with no new LinkedIn requests.</p>
+
+  <h3 style="margin-top:22px">Delivery states</h3>
+  <div class="flow">
+    <span class="pill info">waiting</span><span class="arrow-txt">→</span>
+    <span class="pill good">pending</span><span class="arrow-txt">→</span>
+    <span class="pill info">sent</span><span class="arrow-txt">→</span>
+    <span class="pill good">applied</span><span class="pill warn">saved</span><span class="pill bad">hidden</span>
+    <span class="arrow-txt">&nbsp;or&nbsp;</span><span class="pill bad">rejected</span>
+  </div>
+
+  <h2 id="score">Match score</h2>
+  <div class="card formula">score = <b>65</b> × skill coverage + <b>20</b> × title relevance + <b>15</b> × experience fit</div>
+  <div class="bar" aria-hidden="true"><span style="width:65%;background:var(--accent)"></span><span style="width:20%;background:var(--good)"></span><span style="width:15%;background:var(--warn)"></span></div>
+  <div class="grid" style="margin-top:10px">
+    <div class="card"><h3>Skill coverage · 65</h3><p class="muted">Of the skills the job names (from a ~110-skill taxonomy), how many are on your resume. Skills in the title, or mentioned twice, count double. Very short descriptions are pulled toward 40%.</p></div>
+    <div class="card"><h3>Title relevance · 20</h3><p class="muted">Best overlap with your keywords after normalising: AI = Artificial Intelligence, GenAI = Generative AI, back-end = backend, LLM ⇒ AI. Generic words like "engineer" are ignored.</p></div>
+    <div class="card"><h3>Experience fit · 15</h3><p class="muted">Full marks if the job asks for ≤ your years, −30% per extra year. Years are read from text like "2-4 years", "3+ yrs", "minimum 5 years".</p></div>
+  </div>
+  <h3 style="margin-top:22px">Hard filters (job skipped)</h3>
+  <div class="table-wrap"><table>
+    <tr><th>Code</th><th>Rule</th></tr>
+    <tr><td><code>title</code></td><td>Title contains an excluded word (default: senior, sr, lead, principal, staff, architect, manager, director, head, vp)</td></tr>
+    <tr><td><code>company</code></td><td>Company is on your skip list</td></tr>
+    <tr><td><code>applicants</code></td><td>More applicants than your max</td></tr>
+    <tr><td><code>years</code></td><td>Asks for more years than allowed (auto = your years + 2)</td></tr>
+    <tr><td><code>fresher</code></td><td>Upper bound + 1 &lt; your years ("0-1 years" when you have 3)</td></tr>
+    <tr><td><code>unrelated</code></td><td>Title shares nothing with your keywords <em>and</em> skill coverage &lt; 40%</td></tr>
+    <tr><td><code>duplicate</code></td><td>Same title + company already sent this week</td></tr>
+    <tr><td><code>threshold</code></td><td>Score below your threshold (default 0 = send all)</td></tr>
+  </table></div>
+
+  <h2 id="resume">Resume &amp; per-user folders</h2>
+  <div class="grid">
+    <div class="card">
+      <h3>Parsing (local only)</h3>
+      <p class="muted"><b>Text:</b> pypdf / python-docx / UTF-8. <b>Skills:</b> the same taxonomy as the matcher. <b>Years:</b> date ranges (Jan 2024 – Present, 03/2021 - 02/2023…), skipping education and merging overlaps, with "X+ years" as a fallback. <b>Keywords:</b> suggested from skill categories and the job titles found.</p>
+    </div>
+    <div class="card">
+      <h3>Folder per Telegram user ID</h3>
+<pre>data/users/&lt;telegram_id&gt;/   0700
+  resume.pdf             latest upload
+  resume.txt.extracted   plain text
+  profile.json           skills, years…</pre>
+      <p class="muted" style="margin-top:10px">Telegram authenticates the numeric user ID, so a handler only ever reaches the sender's own folder. Non-int IDs are refused, files are 0600 and written atomically. A new upload replaces the old one, and <code>/deleteme</code> wipes it all.</p>
+    </div>
+  </div>
+
+  <h2 id="ux">Telegram UX</h2>
+  <div class="grid">
+    <div>
+      <div class="tg">
+        🆕 <b>AI Engineer – P&amp;B</b><br>
+        🏢 WSP in India · 📍 Noida<br>
+        🕒 1 hour ago · 35 applicants<br>
+        🎓 Experience asked: 0-3 yrs<br>
+        🎯 <b>Match 69%</b> 🟩🟩🟩⬜⬜<br>
+        ✅ You have: Generative AI, RAG, AI Agents, Azure AI…<br>
+        📚 They also want: Python, CI/CD, Embeddings<br>
+        🔎 <i>via “AI Engineer”</i>
+        <div class="btns"><span style="flex-basis:100%">🔗 Open on LinkedIn</span></div>
+        <div class="btns"><span>✅ Applied</span><span>⭐ Save</span><span>🙈 Hide</span></div>
+      </div>
+    </div>
+    <div class="card">
+      <h3>Main menu</h3>
+      <p class="muted">🔍 Find jobs now · ⚙️ Filters · 📄 My resume · 📊 Status · ⭐ Saved · 💡 Insights · ⏯ Pause / Resume · 🧹 Clear chat · ❓ Help</p>
+      <h3 style="margin-top:12px">Filters</h3>
+      <p class="muted">Keywords · locations · date posted · experience level · job type · on-site/remote/hybrid · Easy Apply · match threshold · max years · my years · skip title words · skip companies · max applicants · quiet hours</p>
+      <h3 style="margin-top:12px">Clear chat</h3>
+      <p class="muted">Every message is tracked. Choose "clear everything" or "keep job alerts". Telegram limits bots to messages from the last 48 h.</p>
+    </div>
+  </div>
+  <div class="table-wrap" style="margin-top:14px"><table>
+    <tr><th>LinkedIn filter</th><th>Param</th><th>Values</th></tr>
+    <tr><td>Date posted</td><td><code>f_TPR</code></td><td>r3600 · r21600 · r86400 · r604800 · r2592000</td></tr>
+    <tr><td>Experience level</td><td><code>f_E</code></td><td>1 Intern · 2 Entry · 3 Associate · 4 Mid-Senior · 5 Director · 6 Executive</td></tr>
+    <tr><td>Job type</td><td><code>f_JT</code></td><td>F · P · C · T · I · V · O</td></tr>
+    <tr><td>Work type</td><td><code>f_WT</code></td><td>1 On-site · 2 Remote · 3 Hybrid</td></tr>
+    <tr><td>Easy Apply</td><td><code>f_AL</code></td><td>true</td></tr>
+  </table></div>
+  <p class="muted" style="margin-top:10px"><b>Access:</b> in <code>approval</code> mode (the default), admins get ✅ Approve / 🚫 Block buttons for each new user. The first user becomes admin when <code>ADMIN_IDS</code> is empty.</p>
+
+  <h2 id="data">Data model</h2>
+  <div class="table-wrap"><table>
+    <tr><th>Table</th><th>Key</th><th>Holds</th></tr>
+    <tr><td><code>users</code></td><td>Telegram ID</td><td>status, admin, filters JSON, resume JSON, paused</td></tr>
+    <tr><td><code>jobs</code></td><td>LinkedIn ID</td><td>card info + cached description, applicants, seniority</td></tr>
+    <tr><td><code>query_seen</code> / <code>query_state</code></td><td>search key</td><td>jobs each search returned; run count</td></tr>
+    <tr><td><code>user_queries</code></td><td>user + search</td><td>for back-filling shared searches</td></tr>
+    <tr><td><code>deliveries</code></td><td>user + job</td><td>status, score, reason, match breakdown, message ID</td></tr>
+    <tr><td><code>messages</code></td><td>chat + message</td><td>kind ui/job/user, for Clear chat</td></tr>
+    <tr><td><code>meta</code></td><td>key</td><td>cooldown, last cycle summary</td></tr>
+  </table></div>
+
+  <h2 id="deploy">Deploy &amp; operate</h2>
+  <div class="grid">
+    <div class="card">
+      <h3>Docker</h3>
+      <p class="muted">Multi-stage build: <b>base → test (pytest) → runtime</b>. If a test fails, no image is built. <code>restart: unless-stopped</code> plus Docker enabled at boot means the bot starts on boot and after crashes. The healthcheck watches <code>data/heartbeat</code>.</p>
+    </div>
+    <div class="card">
+      <h3><code>jobhunter</code> command</h3>
+<pre>jobhunter health | logs | errors | scans
+jobhunter users | approve &lt;id&gt; | block &lt;id&gt;
+jobhunter restart | rebuild | update
+jobhunter test | env | backup</pre>
+    </div>
+  </div>
+
+  <h2 id="tests">Tests &amp; quality gates</h2>
+  <div class="grid">
+    <div class="card"><h3>~175 tests, no network</h3><p class="muted">LinkedIn and Telegram are faked. They cover skills, filters, resume parsing, storage, matcher, LinkedIn parsing &amp; back-off, DB, full scan cycles and bot handlers.</p></div>
+    <div class="card"><h3>Run automatically</h3><p class="muted">① git pre-commit &amp; pre-push hooks · ② GitHub Actions on every push · ③ every Docker build.</p></div>
+  </div>
+
+  <h2 id="change">Making changes</h2>
+  <div class="card steps">
+    <div class="step"><p>Change code and add or adjust tests next to the feature.</p></div>
+    <div class="step"><p><code>jobhunter test</code></p></div>
+    <div class="step"><p>Update <code>ARCHITECTURE.md</code> and this page if the behaviour changed.</p></div>
+    <div class="step"><p><code>git commit</code> → <code>git push</code> (the hooks and CI run the tests).</p></div>
+    <div class="step"><p><code>jobhunter rebuild</code> on the server (tests run again, then the bot restarts).</p></div>
+  </div>
+
+  <footer>Source: <code>app/</code> · details in <code>ARCHITECTURE.md</code> · repo <code>github.com/Harsh-1000/job-hunter</code></footer>
+</main>
+</body>
+</html>

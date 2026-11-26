@@ -1,0 +1,14 @@
+services:
+  job-hunter:
+    build: .
+    image: job-hunter:latest
+    container_name: job-hunter
+    restart: unless-stopped            # starts on boot (Docker is enabled at boot) and after crashes
+    user: "${UID:-1000}:${GID:-1000}"  # your host user, so ./data stays yours
+    init: true
+    volumes:
+      - ./data:/app/data               # database, resumes, logs: survive rebuilds
+      - ./.env:/app/.env:ro
+    logging:
+      driver: json-file
+      options: { max-size: "5m", max-file: "3" }

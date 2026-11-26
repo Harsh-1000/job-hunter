@@ -1,0 +1,279 @@
+# Job Hunter — Architecture
+
+> A Telegram bot (**@openings_radar_bot**) that watches LinkedIn for new jobs and sends each user the
+> ones that fit **their** resume and filters, with a match %.
+> Visual version: [`docs/architecture.html`](docs/architecture.html) (open it in a browser).
+
+---
+
+## 1. What it does
+
+1. A user opens the bot and sends `/start`. Depending on `ACCESS_MODE`, they're either let in straight away or wait for an admin to approve them.
+2. They send their **resume** (PDF / DOCX / TXT). The bot pulls out their skills, years of experience and job titles, and suggests search keywords.
+3. They set **filters** from the ⚙️ menu: keywords, locations, date posted, experience level, job type, on-site/remote/hybrid, Easy Apply, **match threshold**, max years a job may ask for, title words / companies to skip, max applicants, and quiet hours.
+4. Every `SCAN_EVERY_MINUTES` (default 5), the bot searches LinkedIn for every user's keywords × locations, newest first. It scores each new job against that user's resume and sends the ones at or above their threshold (default 0 = everything).
+5. Each alert shows the match %, the skills they have, the skills the job also wants, and buttons: 🔗 Open · ✅ Applied · ⭐ Save · 🙈 Hide.
+
+---
+
+## 2. Components
+
+```
+                ┌──────────────── Docker container "job-hunter" (restart: unless-stopped) ────────────────┐
+ Telegram  ◄──► │  app/bot.py        handlers, menus, approval flow, Clear chat, background jobs          │
+ users          │     │  app/ui.py   texts + keyboards (pure, testable)                                     │
+                │     ▼                                                                                   │
+                │  app/scanner.py    the scan cycle: plan searches → fetch → match → queue                │
+                │     │        │                                                                          │
+                │     ▼        ▼                                                                          │
+ LinkedIn  ◄─── │  app/linkedin.py   public jobs-guest endpoints, polite delays, 429 back-off             │
+ (public,       │  app/matcher.py    hard filters + score 0-100                                           │
+  no login)     │  app/resume.py     PDF/DOCX/TXT → text → skills, years, titles, keyword ideas           │
+                │  app/skills.py     shared skill taxonomy (~110 skills with aliases)                     │
+                │  app/filters.py    per-user Filters + LinkedIn Query (URL params, shared key)           │
+                │  app/db.py         SQLite (WAL)          app/storage.py  per-user resume folders        │
+                │  app/admin.py      CLI used by the `jobhunter` command                                  │
+                └───────────────────────────── ./data (volume) ───────────────────────────────────────────┘
+                                                   jobhunter.db · users/<id>/ · logs/ · heartbeat
+```
+
+| File | Responsibility |
+|---|---|
+| `main.py` | Logging (stdout + `data/logs/bot.log`, rotated daily, kept 7 days), DB init, starts polling |
+| `app/config.py` | Server-wide settings from `.env` (token, admins, access mode, scan interval, delays) |
+| `app/bot.py` | All Telegram handlers, access control, filter menu, resume upload, delivery, Clear chat, jobs |
+| `app/ui.py` | Every text and keyboard the user sees (no I/O → unit-tested directly) |
+| `app/scanner.py` | One scan cycle; cooldown after rate limits; re-scoring after filter/resume changes |
+| `app/linkedin.py` | HTTP client + HTML parsers for search results and job details |
+| `app/matcher.py` | `evaluate()` → `Match(ok, score, reason, matched, missing, years)` |
+| `app/resume.py` | Text extraction, experience years, titles, keyword suggestions |
+| `app/skills.py` | Skill taxonomy used by **both** resume parsing and job matching |
+| `app/filters.py` | `Filters` dataclass (stored as JSON per user), `Query` (one LinkedIn search), parsers |
+| `app/db.py` | SQLite schema + queries |
+| `app/storage.py` | `data/users/<telegram_id>/` folders |
+| `app/admin.py` | `python -m app.admin users / approve / block / make-admin / stats / reset-cooldown` |
+
+---
+
+## 3. LinkedIn access
+
+* It uses LinkedIn's **public, logged-out** endpoints, the same ones linkedin.com/jobs uses for visitors who aren't signed in:
+  * search: `https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?keywords=…&location=…&f_TPR=r86400&sortBy=DD&start=0` (10 jobs per page)
+  * detail: `https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/<id>`
+* **No account or cookies are used, so no account can be blocked.**
+* Filter codes are LinkedIn's own:
+
+| Filter | Param | Values |
+|---|---|---|
+| Date posted | `f_TPR` | `r3600` 1 h · `r21600` 6 h · `r86400` 24 h · `r604800` week · `r2592000` month |
+| Experience level | `f_E` | 1 Internship · 2 Entry · 3 Associate · 4 Mid-Senior · 5 Director · 6 Executive |
+| Job type | `f_JT` | F Full-time · P Part-time · C Contract · T Temporary · I Internship · V Volunteer · O Other |
+| Work type | `f_WT` | 1 On-site · 2 Remote · 3 Hybrid |
+| Easy Apply | `f_AL` | `true` |
+| Sort | `sortBy` | `DD` (newest first, always) |
+
+* **Being polite** (LinkedIn returns HTTP 429 to clients that are too fast):
+  * a random 2–5 s pause before every request, with rotating browser user agents;
+  * on 429, it waits 30 s and then 60 s (plus jitter) before retrying; after the third 429 it stops the cycle;
+  * the whole scanner then **cools down** for 10 → 20 → 40 → 60 min, and resets after a clean cycle;
+  * `SCAN_EVERY_MINUTES` can't go below 2. **"Every second" isn't possible:** LinkedIn would block the server's IP within minutes. Every 5 min, newest first, gets alerts out a few minutes after posting.
+
+---
+
+## 4. The scan cycle (`app/scanner.py`)
+
+```
+every SCAN_EVERY_MINUTES ──► plan ──► search ──► queue per user ──► details ──► match ──► deliver
+```
+
+1. **Plan.** For each active, unpaused user, `queries_for(filters)` gives one `Query` per keyword × location. Queries with the same `key` (a hash of keyword, location and LinkedIn filters, case-insensitive) are **merged**, so 10 users searching "AI Engineer / India / 24 h" cost one request.
+   * If a user joins a search that has already run for others, the jobs that search found in its date window are back-filled to them.
+2. **Search.** Least-recently-run searches go first. A page is fetched (newest first), and job IDs the search hasn't seen before (`query_seen`) are "new". Paging stops at the first page with an already-seen job, or a short last page. A brand-new search reads up to `PAGES_FIRST_SCAN` pages (30 jobs).
+3. **Queue.** Every new job ID becomes a `deliveries` row with status `waiting` for every user of that search.
+4. **Details.**
+   * For each `waiting` row, excluded title words are checked first (no request wasted).
+   * Otherwise the full description is fetched **once** and cached in `jobs`, so other users reuse it.
+   * A cycle fetches at most 60 descriptions; the rest stay `waiting` for the next cycle.
+   * After 3 failed fetches, the job is scored on its title only.
+5. **Match.** A duplicate check runs first (same title + company sent in the last 7 days, i.e. reposted in another city). Then `matcher.evaluate()` runs, and the row becomes `pending` (with score) or `rejected` (with a reason code).
+6. **Deliver.** Every 60 s, and right after a cycle, the bot sends `pending` rows best score first, up to `MAX_PER_CYCLE` per user. It skips paused users and users in their quiet hours.
+   * If a user has blocked the bot (Forbidden), they're auto-paused.
+
+If a user changes their filters or resume, `reevaluate_user()` re-scores their recent `pending` and `rejected` rows **from the cache, with no new requests**. For example, lowering the threshold sends the newly qualifying jobs right away.
+
+---
+
+## 5. Matching & score (`app/matcher.py`)
+
+**Hard filters**: a job is skipped, with the reason stored, if any of these apply:
+
+| Code | Rule |
+|---|---|
+| `title` | title contains an excluded word (whole word; default: senior, sr, lead, principal, staff, architect, manager, director, head, vp) |
+| `company` | company matches an excluded company |
+| `applicants` | more applicants than the user's max |
+| `years` | the minimum years the job asks for > allowed (auto = your years + 2, or a fixed number, or "any") |
+| `fresher` | the job's upper bound + 1 < your years (e.g. "0-1 years" when you have 3) |
+| `unrelated` | the title shares nothing with your keywords **and** the description covers < 40% skills |
+| `duplicate` | same title + company already sent in the last 7 days |
+| `threshold` | score < your match threshold |
+
+**Score (0–100)**
+
+```
+score = 65 × skill coverage + 20 × title relevance + 15 × experience fit
+```
+* **Skill coverage**: the taxonomy skills found in the job title and description. A skill named in the title, or mentioned twice, counts ×2. Coverage = the weight of those skills that are on your resume ÷ the total weight.
+  * Short descriptions (total weight < 4) are pulled toward 40% so that one keyword can't look like a perfect match.
+  * A description that names no tech skills gets 25%.
+* **Title relevance**: the best overlap between the title and any of your keywords, after normalising (AI = Artificial Intelligence, GenAI = Generative AI, back-end = backend, node.js = node, SDE = software…). Generic words like engineer/developer are ignored. Implications count, e.g. LLM → AI.
+* **Experience fit**: 1.0 if the job asks for ≤ your years, otherwise −0.3 per extra year.
+* **No resume yet**: no score. Jobs are still sent if their title fits your keywords.
+
+Required years come from the description. It recognises "2-4 years", "3+ yrs", "minimum 5 years", "two years of experience", and takes the **largest minimum** ("5+ years overall, 2 years of Kafka" → 5+).
+
+---
+
+## 6. Resume handling & the per-user folder
+
+**Parsing** (`app/resume.py`, all local, nothing is sent anywhere):
+* **Text**: `pypdf` (first 10 pages), `python-docx` (paragraphs + tables), or UTF-8 text. Scanned or empty files are rejected with a hint.
+* **Skills**: `skills.find_skills()`, the same taxonomy the matcher uses. Ordered by number of mentions.
+* **Experience years**:
+  * Date ranges such as `Jan 2024 – Present`, `03/2021 - 02/2023` and `Feb '24 – Nov 2024` are collected. Lines that look like education (university, B.Tech, CGPA…) are skipped.
+  * Overlapping ranges are merged, so two jobs at once aren't double-counted, and the months are summed.
+  * Fallback: "X+ years of experience". The user can override it with `/years`.
+* **Keyword suggestions**: from skill categories (3+ AI skills → AI Engineer, Generative AI Engineer, LLM Engineer; backend → Backend Developer, Software Engineer; Node.js → Node.js Developer…) plus the job titles found in the resume, up to 6. They're applied automatically on the first upload if the user has no keywords yet.
+
+**Storage** (`app/storage.py`):
+```
+data/users/<telegram_user_id>/      0700
+    resume.pdf | resume.docx | resume.txt   the file the user sent (only the latest; a new upload replaces it)
+    resume.txt.extracted                    the extracted plain text
+    profile.json                            the parsed profile (skills, years, titles, keyword ideas)
+```
+* The folder name is the **numeric Telegram user ID**. Telegram authenticates it and it never changes, so a handler can only ever reach the sender's own folder. `user_dir()` refuses anything that isn't an int, so no path tricks are possible.
+* Files are written atomically (temp file + rename) with mode 0600.
+* The parsed profile is also stored in `users.resume` (JSON) so scans don't read files.
+* 🗑 Delete my resume (button) removes the folder. `/deleteme confirm` removes the folder, the DB rows and the chat messages.
+
+---
+
+## 7. Data model (`data/jobhunter.db`, SQLite WAL)
+
+| Table | Key | What |
+|---|---|---|
+| `users` | `id` (Telegram user ID) | chat_id, name, `status` pending/active/blocked, `is_admin`, `filters` JSON, `resume` JSON, `paused`, `last_manual_scan` |
+| `jobs` | `id` (LinkedIn job ID) | title, company, location, url, posted, description, criteria, applicants, seniority, `detail_status` none/ok/failed |
+| `query_seen` | (`qkey`, `job_id`) | which jobs each search has returned (for paging) |
+| `query_state` | `qkey` | last run, run count |
+| `user_queries` | (`user_id`, `qkey`) | searches a user is attached to (for back-fill) |
+| `deliveries` | (`user_id`, `job_id`) | `status` waiting → pending → sent → applied/saved/hidden, or rejected · `score`, `reason`, `reason_code`, `details` JSON (match breakdown), `message_id` |
+| `messages` | (`chat_id`, `message_id`) | every message in each chat with `kind` ui/job/user, for Clear chat |
+| `meta` | `key` | cooldown, last cycle summary |
+
+**Pruning** (every 12 h): deliveries older than 30 days are removed, except applied and saved ones. So are unreferenced jobs older than 30 days, search history older than 35 days, and message IDs older than 3 days.
+
+---
+
+## 8. Telegram UX
+
+**Main menu** (persistent keyboard): 🔍 Find jobs now · ⚙️ Filters · 📄 My resume · 📊 Status · ⭐ Saved · 💡 Insights · ⏯ Pause / Resume · 🧹 Clear chat · ❓ Help
+
+**Commands**: `/start /help /scan /filters /resume (/cv) /keywords … /location … /threshold N /years N /saved (/applied) /insights /status /pause /clear /deleteme`. Admin only: `/users /approve <id> /block <id>`.
+
+* **Filters menu** (inline):
+  * multi-select toggles for experience level, job type and work type;
+  * single-select for date posted;
+  * presets plus a custom value for the threshold and max years;
+  * free-text prompts for keywords, locations, excluded words and companies, max applicants, quiet hours and your years.
+* **Access**: `ACCESS_MODE=approval` (default). A new user is `pending`, and admins get ✅ Approve / 🚫 Block buttons; the user is told when they're approved. The first user ever becomes admin when `ADMIN_IDS` is empty. `open` mode lets anyone in, up to `MAX_USERS`.
+* **Clear chat**: every message the bot sends, and every message the user sends, is recorded in `messages`. 🧹 offers *Clear everything* or *Clear but keep job alerts*. It deletes in batches of 100 with `deleteMessages`, then sends a fresh menu. Telegram only lets bots delete messages from the **last 48 h**; older ones stay, and the user can use Telegram's own "Clear history" for those.
+* **Insights**: from the last 30 days of the user's matches: the average and best match, the top "missing" skills (what to learn next), their most-wanted skills, and the most active companies.
+* **Manual scan**: runs only that user's searches, at most once every `MANUAL_SCAN_COOLDOWN_SECONDS`. It shares a lock with the scheduled cycle.
+
+---
+
+## 9. Deployment
+
+* **Docker** (`Dockerfile`, multi-stage):
+  * `base`: dependencies.
+  * `test`: copies the code and tests and runs **pytest**. If any test fails, the image doesn't build.
+  * `runtime`: depends on `test`, so tests always run.
+  * Healthcheck: `data/heartbeat` must have been touched in the last 150 s (the bot touches it every 30 s).
+* **docker-compose.yml**:
+  * `restart: unless-stopped`, and Docker itself is enabled at boot, so **the bot starts on boot and after crashes**;
+  * runs as your host UID/GID, so `./data` stays yours;
+  * mounts `./data` and `./.env` (read-only);
+  * logs capped at 3 × 5 MB.
+* **Server setup** (once): `./scripts/install.sh`. It creates the venv and runs the tests, installs the git hooks, links the `jobhunter` command, and starts Docker.
+
+### `jobhunter` command (like `wnc`)
+`~/.local/bin/jobhunter → <repo>/scripts/jobhunter`, works from any directory and over SSH:
+
+```
+jobhunter health            container, heartbeat, stats, disk, last problems
+jobhunter logs | log | errors | scans
+jobhunter users | approve <id> | block <id> | make-admin <id> | stats | reset-cooldown
+jobhunter start | stop | restart
+jobhunter rebuild           rebuild (tests run) + restart     ← after you change code
+jobhunter update            git pull + rebuild                ← after pushing from another machine
+jobhunter test | env | backup | shell
+```
+
+---
+
+## 10. Tests & quality gates
+
+`tests/` contains about 175 tests. They make no network calls; LinkedIn and Telegram are faked in `tests/fakes.py`.
+
+| File | Covers |
+|---|---|
+| `test_skills_filters.py` | skill aliases (Java≠JavaScript, Go≠"go to"…), Filters JSON, LinkedIn params, query sharing, quiet hours, input parsers |
+| `test_resume_storage.py` | PDF/DOCX/TXT extraction, errors, years (merge, education skip, formats), titles, suggestions, per-user folders (perms, replace, isolation, path safety) |
+| `test_matcher.py` | required years, title relevance, exclusions, years/fresher rules, threshold, score monotonicity, no-resume mode |
+| `test_linkedin.py` | HTML parsing on saved real pages, params sent, 429 back-off / give-up, last page |
+| `test_db.py` | users, deliveries, duplicates, 48 h message window, pruning |
+| `test_scanner.py` | full cycles, shared searches, single detail fetch, paging, back-fill, duplicates, pause, rate-limit cooldown & recovery, re-evaluation |
+| `test_bot.py` | approval flow, admin-only, resume upload, filter buttons & text, job buttons, user isolation, delivery cap/quiet/pause/blocked, Clear chat, /deleteme, manual scan cooldown |
+
+**The tests run automatically:**
+1. **pre-commit** and **pre-push** git hooks (`scripts/hooks`, enabled by `git config core.hooksPath scripts/hooks`);
+2. **GitHub Actions** (`.github/workflows/tests.yml`) on every push and PR, plus a Docker build;
+3. **every Docker build** (`jobhunter rebuild`), so a broken bot is never deployed.
+
+---
+
+## 11. Making changes (checklist)
+
+1. Change the code and **add or adjust tests** next to the feature (see the table above).
+2. `jobhunter test`
+3. If you changed the behaviour, update this file and `docs/architecture.html`.
+4. `git commit` (the hook runs the tests), then `git push` (the hook and CI run them again).
+5. `jobhunter rebuild` on the server (the build runs the tests again, then restarts the bot).
+
+**Common extensions**
+* *New skill* → `app/skills.py` (+ a case in `test_skills_filters.py::test_find_skills`).
+* *New filter*:
+  1. add a field to `Filters`, and to `summary()` and `filters_kb()`;
+  2. add a handler branch in `on_filter_button` / `apply_text_setting`;
+  3. if LinkedIn supports it, add it to `Query` and `Query.params()`;
+  4. if it's applied after fetching, add it to `matcher.evaluate()`.
+* *New menu button* → `ui.MENU_BUTTONS` / `MAIN_KB` plus the `buttons` dict in `bot.build()` (a test checks every button is wired).
+
+## 12. Configuration (`.env`)
+
+| Var | Default | |
+|---|---|---|
+| `TELEGRAM_BOT_TOKEN` | — | from @BotFather (**never commit `.env`**) |
+| `ADMIN_IDS` | empty | comma-separated Telegram IDs; empty → the first /start becomes admin |
+| `ACCESS_MODE` | approval | `approval` or `open` |
+| `MAX_USERS` | 50 | cap for open mode |
+| `SCAN_EVERY_MINUTES` | 5 | min 2 |
+| `PAGES_FIRST_SCAN` | 3 | backlog pages for a new search |
+| `MAX_PER_CYCLE` | 10 | alerts per user per cycle |
+| `MANUAL_SCAN_COOLDOWN_SECONDS` | 120 | |
+| `REQUEST_DELAY_MIN/MAX` | 2 / 5 | seconds between LinkedIn requests |
+| `MAX_COOLDOWN_MINUTES` | 60 | cap for the rate-limit back-off |
+| `MAX_RESUME_MB` | 5 | |
+| `TIMEZONE` | Asia/Kolkata | for quiet hours and display |
