@@ -11,4 +11,4 @@ services:
       - ./.env:/app/.env:ro
     logging:
       driver: json-file
-      options: { max-size: "5m", max-file: "3" }
+      options: { max-size: "1m", max-file: "2" }   # docker's own copy of the output: at most ~2 MB

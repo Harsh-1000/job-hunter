@@ -5,6 +5,7 @@ import asyncio
 import html
 import json
 import logging
+import time
 from datetime import datetime, timedelta
 from functools import wraps
 from zoneinfo import ZoneInfo
@@ -130,7 +131,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await reply(update, ctx, ui.onboarding(name) + ("\n\n👑 You are the admin of this bot." if user["is_admin"]
                                                     and is_new else ""), reply_markup=ui.MAIN_KB)
     if not json.loads(user["resume"] or "null"):
-        await reply(update, ctx, "📎 Send your resume as a file now (PDF, DOCX or TXT).")
+        await reply(update, ctx, "📎 Send your resume as a file now (PDF, DOCX or TXT).", reply_markup=ui.TOUR_KB)
 
 
 async def notify_admins_new_user(ctx: ContextTypes.DEFAULT_TYPE, user) -> None:
@@ -156,7 +157,8 @@ async def set_access(ctx: ContextTypes.DEFAULT_TYPE, target: int, status: str) -
         if status == "active":
             await send(ctx.bot, u["chat_id"], "🎉 You're approved! " + ui.onboarding(u["first_name"]),
                        reply_markup=ui.MAIN_KB)
-            await send(ctx.bot, u["chat_id"], "📎 Send your resume as a file now (PDF, DOCX or TXT).")
+            await send(ctx.bot, u["chat_id"], "📎 Send your resume as a file now (PDF, DOCX or TXT).",
+                       reply_markup=ui.TOUR_KB)
     except TelegramError:
         pass
     return f"{'✅ Approved' if status == 'active' else '🚫 Blocked'} {e(u['first_name'] or '')} ({target})."
@@ -200,7 +202,30 @@ async def cmd_users(update: Update, ctx: ContextTypes.DEFAULT_TYPE, user) -> Non
 
 
 async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    await reply(update, ctx, ui.HELP, reply_markup=ui.MAIN_KB)
+    await reply(update, ctx, ui.HELP, reply_markup=ui.TOUR_KB)
+
+
+async def cmd_intro(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Guided tour. Open to everyone (even users still waiting for approval)."""
+    await reply(update, ctx, ui.intro_text(0), reply_markup=ui.intro_kb(0))
+
+
+async def on_intro_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    q = update.callback_query
+    arg = q.data.split(":", 1)[1]
+    await q.answer()
+    if arg == "done":
+        user = db.get_user(update.effective_user.id)
+        has_resume = bool(user and json.loads(user["resume"] or "null"))
+        text = ("✅ You're all set — tap <b>⚙️ Filters</b> to fine-tune, or <b>🔍 Find jobs now</b>." if has_resume
+                else "📎 <b>Send your resume as a file</b> (PDF, DOCX or TXT) to start getting matched jobs.")
+        return await q.edit_message_text(text, parse_mode=ParseMode.HTML)
+    page = int(arg) if arg.isdigit() else 0
+    try:
+        await q.edit_message_text(ui.intro_text(page), parse_mode=ParseMode.HTML, reply_markup=ui.intro_kb(page))
+    except BadRequest as err:   # tapped the page counter: "message is not modified"
+        if "not modified" not in str(err):
+            raise
 
 
 # =============== resume ===============
@@ -638,6 +663,27 @@ async def prune_job(ctx: ContextTypes.DEFAULT_TYPE) -> None:
     db.prune()
 
 
+def clean_old_logs(logs_dir=None, hours: float | None = None) -> list[str]:
+    """Delete rotated log files older than LOG_RETENTION_HOURS (the live bot.log is rotated hourly)."""
+    logs_dir = logs_dir or settings.data_dir / "logs"
+    hours = settings.log_retention_hours if hours is None else hours
+    if not logs_dir.exists():
+        return []
+    cutoff = time.time() - hours * 3600
+    removed = []
+    for f in logs_dir.iterdir():
+        if f.is_file() and f.name != "bot.log" and f.stat().st_mtime < cutoff:
+            f.unlink()
+            removed.append(f.name)
+    return removed
+
+
+async def log_cleanup_job(ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    removed = clean_old_logs()
+    if removed:
+        log.info("removed %d old log files", len(removed))
+
+
 async def ack_unknown(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await update.callback_query.answer()   # stale button from an old message
 
@@ -653,7 +699,8 @@ COMMANDS = [
     ("keywords", "🔎 Set keywords"), ("location", "📍 Set locations"), ("threshold", "🎯 Min match %"),
     ("years", "👤 Your years of experience"), ("saved", "⭐ Saved & applied jobs"),
     ("insights", "💡 Skills you're missing"), ("status", "📊 Stats"), ("pause", "⏯ Pause / resume alerts"),
-    ("clear", "🧹 Clear chat"), ("help", "❓ How it works"), ("deleteme", "🗑 Delete all my data"),
+    ("clear", "🧹 Clear chat"), ("intro", "📖 Guided tour of all features"), ("help", "❓ Commands"),
+    ("deleteme", "🗑 Delete all my data"),
 ]
 
 
@@ -671,7 +718,8 @@ async def post_init(app: Application) -> None:
                      name=SCAN_JOB, job_kwargs={"misfire_grace_time": 60, "coalesce": True, "max_instances": 1})
     jq.run_repeating(deliver_job, interval=60, first=30, name=DELIVER_JOB)
     jq.run_repeating(heartbeat, interval=30, first=0, name="heartbeat")
-    jq.run_repeating(prune_job, interval=timedelta(hours=12), first=600, name="prune")
+    jq.run_repeating(prune_job, interval=timedelta(hours=6), first=600, name="prune")
+    jq.run_repeating(log_cleanup_job, interval=timedelta(hours=1), first=60, name="log-cleanup")
     log.info("Job Hunter started: scanning every %s min", settings.scan_every_minutes)
 
 
@@ -681,6 +729,7 @@ def build() -> Application:
     app.add_handler(TypeHandler(Update, track_incoming), group=-1)
     app.add_handler(CommandHandler("start", cmd_start, filters=private))
     app.add_handler(CommandHandler("help", cmd_help, filters=private))
+    app.add_handler(CommandHandler(["intro", "tour", "guide"], cmd_intro, filters=private))
     app.add_handler(CommandHandler("scan", cmd_scan, filters=private, block=False))
     app.add_handler(CommandHandler("filters", cmd_filters, filters=private))
     app.add_handler(CommandHandler(["resume", "cv"], cmd_resume, filters=private))
@@ -712,6 +761,7 @@ def build() -> Application:
     app.add_handler(CallbackQueryHandler(on_resume_button, pattern=r"^r:"))
     app.add_handler(CallbackQueryHandler(on_clear_button, pattern=r"^c:"))
     app.add_handler(CallbackQueryHandler(on_admin_button, pattern=r"^a:"))
+    app.add_handler(CallbackQueryHandler(on_intro_button, pattern=r"^i:"))
     app.add_handler(CallbackQueryHandler(cmd_scan, pattern=r"^s:scan$", block=False))
     app.add_handler(CallbackQueryHandler(ack_unknown))
     app.add_error_handler(on_error)

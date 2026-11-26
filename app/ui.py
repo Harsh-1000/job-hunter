@@ -43,13 +43,103 @@ I watch LinkedIn for new jobs that fit <b>your</b> resume and send them the mome
 /resume – your resume · /saved – saved & applied
 /insights – skills you're missing most
 /status – stats · /pause – pause or resume alerts
-/clear – clear this chat · /deleteme – delete all your data"""
+/clear – clear this chat · /deleteme – delete all your data
+/intro – 📖 guided tour of every feature"""
 
 
 def onboarding(name: str) -> str:
     return (f"👋 Hi {e(name or 'there')}! I'm <b>Job Hunter</b>.\n\n"
             "Send me your <b>resume</b> (PDF, DOCX or TXT) and I'll find LinkedIn jobs that match it, "
-            "as soon as they're posted, with a match %.\n\nTap ❓ Help any time.")
+            "as soon as they're posted, with a match %.\n\n"
+            "New here? Tap <b>📖 Take the tour</b> (1 minute) or send /intro any time.")
+
+
+# ---------- guided tour (/intro) ----------
+
+INTRO_PAGES: list[tuple[str, str]] = [
+    ("🎯 What is Job Hunter?",
+     "I'm your personal LinkedIn job scout.\n\n"
+     "Every few minutes I search LinkedIn for <b>new</b> jobs (newest first), read each job description, "
+     "compare it with <b>your resume</b>, and message you only the ones that fit, with a "
+     "<b>match %</b>.\n\n"
+     "✅ No LinkedIn account or login needed\n"
+     "✅ Jobs usually reach you minutes after they're posted\n"
+     "✅ Every user gets their own resume, filters and alerts"),
+    ("📄 Step 1: Send your resume",
+     "Send your resume as a <b>file</b>: PDF, DOCX or TXT (max 5 MB).\n\n"
+     "I read it and pull out:\n"
+     "• your <b>skills</b> (Node.js, Python, RAG, AWS…)\n"
+     "• your <b>years of experience</b> (from your job dates)\n"
+     "• your <b>job titles</b>, plus <b>suggested search keywords</b>\n\n"
+     "Wrong years? Fix them with <code>/years 2.5</code>.\n"
+     "Send a new file any time to replace it. Tap <b>📄 My resume</b> to see what I found."),
+    ("⚙️ Step 2: Set your filters",
+     "Tap <b>⚙️ Filters</b>. The same filters LinkedIn has:\n"
+     "🔎 Keywords (several, e.g. <i>AI Engineer, GenAI Engineer</i>)\n"
+     "📍 Location · 🕒 Date posted (1 h / 6 h / 24 h / week)\n"
+     "🎓 Experience level · 📄 Job type · 🏠 On-site / Remote / Hybrid · ⚡ Easy Apply\n\n"
+     "Plus extra filters of mine:\n"
+     "🎯 Match threshold · 🧮 Max years a job may ask · 🚫 Skip title words (senior, lead…)\n"
+     "🏢 Skip companies · 👥 Max applicants · 🌙 Quiet hours (no pings at night)\n\n"
+     "Quick commands: <code>/keywords AI Engineer, Backend Developer</code> · <code>/location India</code>"),
+    ("🎯 Step 3: The match %",
+     "Each job gets a score from 0 to 100:\n\n"
+     "• <b>65%</b>: how many of the skills the job asks for are on your resume\n"
+     "• <b>20%</b>: how well the job title fits your keywords\n"
+     "• <b>15%</b>: whether your experience fits what they ask\n\n"
+     "Set a <b>threshold</b> to get only good matches, e.g. <code>/threshold 40</code> sends only jobs ≥ 40%.\n"
+     "Default is <b>0</b>: you get every relevant job.\n\n"
+     "I skip jobs that ask for far more years than you have, and fresher-only roles."),
+    ("📬 Step 4: Job alerts",
+     "Each alert shows the title, company, location, when it was posted, applicants, experience asked, "
+     "your <b>match %</b>, the skills <b>you have</b> and the skills <b>they also want</b>.\n\n"
+     "Buttons on every job:\n"
+     "🔗 <b>Open on LinkedIn</b>: read & apply\n"
+     "✅ <b>Applied</b>: track what you applied to\n"
+     "⭐ <b>Save</b>: keep it for later\n"
+     "🙈 <b>Hide</b>: not for me (↩️ Undo is available)\n\n"
+     "The same role posted in several cities is sent only once."),
+    ("🧭 The menu buttons",
+     "🔍 <b>Find jobs now</b>: search right away (otherwise automatic every few minutes)\n"
+     "⚙️ <b>Filters</b>: everything you can tune\n"
+     "📄 <b>My resume</b>: what I read from it, suggested keywords\n"
+     "📊 <b>Status</b>: last/next scan, how many sent, applied, queued\n"
+     "⭐ <b>Saved</b>: your saved & applied jobs\n"
+     "💡 <b>Insights</b>: skills jobs want that you don't have yet (what to learn next)\n"
+     "⏯ <b>Pause / Resume</b>: stop or restart alerts\n"
+     "🧹 <b>Clear chat</b>: tidy this chat (optionally keep job alerts)\n"
+     "❓ <b>Help</b>: commands list · /intro: this tour"),
+    ("🔒 Privacy & tips",
+     "• Your resume is stored only on this bot's server, in a folder that belongs to your Telegram ID. "
+     "It is never shared or sent anywhere.\n"
+     "• <code>/deleteme</code> deletes your resume, filters and history completely.\n\n"
+     "<b>Tips</b>\n"
+     "• Use 3–6 specific keywords (e.g. <i>Node.js Developer</i> rather than <i>Developer</i>)\n"
+     "• Too many alerts? Raise the threshold or narrow the date posted\n"
+     "• Too few? Add keywords, set threshold to 0, add 'Remote' as a location\n\n"
+     "Ready? Send your resume now 📎"),
+]
+
+
+def intro_text(page: int) -> str:
+    page = max(0, min(page, len(INTRO_PAGES) - 1))
+    title, body = INTRO_PAGES[page]
+    return f"<b>{title}</b>\n\n{body}"
+
+
+def intro_kb(page: int) -> InlineKeyboardMarkup:
+    page = max(0, min(page, len(INTRO_PAGES) - 1))
+    last = len(INTRO_PAGES) - 1
+    nav = []
+    if page > 0:
+        nav.append(B("◀️ Back", callback_data=f"i:{page - 1}"))
+    nav.append(B(f"{page + 1}/{last + 1}", callback_data=f"i:{page}"))
+    nav.append(B("Next ▶️", callback_data=f"i:{page + 1}") if page < last else
+               B("🚀 Get started", callback_data="i:done"))
+    return InlineKeyboardMarkup([nav])
+
+
+TOUR_KB = InlineKeyboardMarkup([[B("📖 Take the tour", callback_data="i:0")]])
 
 
 # ---------- job alert ----------

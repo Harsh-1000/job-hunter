@@ -22,7 +22,9 @@ def setup_logging() -> None:
     root.addHandler(out)
     logs = settings.data_dir / "logs"
     logs.mkdir(parents=True, exist_ok=True)
-    fh = TimedRotatingFileHandler(logs / "bot.log", when="midnight", backupCount=7, encoding="utf-8")
+    # one file per hour, keep LOG_RETENTION_HOURS of them (default 12) — older ones are deleted
+    fh = TimedRotatingFileHandler(logs / "bot.log", when="h", interval=1,
+                                  backupCount=settings.log_retention_hours, encoding="utf-8")
     fh.setFormatter(fmt)
     root.addHandler(fh)
     for noisy in ("httpx", "httpcore", "apscheduler", "pypdf", "telegram.ext.Application"):
@@ -31,6 +33,8 @@ def setup_logging() -> None:
 
 def main() -> None:
     setup_logging()
+    from app.bot import clean_old_logs
+    clean_old_logs()
     db.init()
     if not settings.bot_token:
         sys.exit("Set TELEGRAM_BOT_TOKEN in .env (create the bot with @BotFather first).")

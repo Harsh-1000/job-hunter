@@ -353,3 +353,108 @@ def test_every_menu_button_has_a_handler():
     wired = " ".join(str(h.filters) for hs in app.handlers.values() for h in hs if hasattr(h, "filters"))
     for label in ui.MENU_BUTTONS:
         assert label in wired, label
+
+
+# ---------------- intro / tour ----------------
+
+def test_intro_pages_cover_every_feature():
+    text = " ".join(ui.intro_text(i) for i in range(len(ui.INTRO_PAGES)))
+    for feature in ("resume", "Filters", "Keywords", "Location", "Date posted", "Experience level", "Job type",
+                    "Remote", "Easy Apply", "threshold", "match %", "Applied", "Save", "Hide", "Insights",
+                    "Pause", "Clear chat", "/deleteme", "/years", "Quiet hours"):
+        assert feature.lower() in text.lower(), feature
+    for label in ui.MENU_BUTTONS:          # every menu button is explained
+        assert label.split(" ", 1)[1].split(" /")[0] in text, label
+
+
+def test_intro_keyboard_navigation():
+    last = len(ui.INTRO_PAGES) - 1
+    first = [b["callback_data"] for b in ui.intro_kb(0).to_dict()["inline_keyboard"][0]]
+    assert first == ["i:0", "i:1"]                                   # no Back on page 1
+    middle = [b["callback_data"] for b in ui.intro_kb(2).to_dict()["inline_keyboard"][0]]
+    assert middle == ["i:1", "i:2", "i:3"]
+    end = [b["callback_data"] for b in ui.intro_kb(last).to_dict()["inline_keyboard"][0]]
+    assert end[-1] == "i:done"
+    assert ui.intro_text(99) == ui.intro_text(last) and ui.intro_text(-5) == ui.intro_text(0)
+
+
+def test_intro_works_even_before_approval():
+    active(1, admin=True)
+    db.upsert_user(2, 20)                  # pending
+    ctx = make_ctx()
+    run(bot.cmd_intro(make_update(uid=2), ctx))
+    assert "What is Job Hunter" in ctx.bot.sent[-1].text
+    assert ctx.bot.sent[-1].kw["reply_markup"].to_dict()["inline_keyboard"][0][-1]["callback_data"] == "i:1"
+
+
+def test_intro_button_pages_and_done():
+    active(1)
+    upd = make_update(uid=1, data="i:3")
+    run(bot.on_intro_button(upd, make_ctx()))
+    assert "match %" in upd.callback_query.edit_message_text.await_args.args[0]
+    upd = make_update(uid=1, data="i:done")
+    run(bot.on_intro_button(upd, make_ctx()))
+    assert "Send your resume" in upd.callback_query.edit_message_text.await_args.args[0]
+    upd = make_update(uid=1, data="i:junk")
+    run(bot.on_intro_button(upd, make_ctx()))
+    assert "What is Job Hunter" in upd.callback_query.edit_message_text.await_args.args[0]
+
+
+def test_start_and_help_offer_the_tour():
+    ctx = make_ctx()
+    run(bot.cmd_start(make_update(uid=1), ctx))
+    assert any("i:0" in str(m.kw.get("reply_markup").to_dict()) for m in ctx.bot.sent
+               if hasattr(m.kw.get("reply_markup"), "inline_keyboard"))
+    run(bot.cmd_help(make_update(uid=1), ctx))
+    assert "/intro" in ctx.bot.sent[-1].text and "i:0" in str(ctx.bot.sent[-1].kw["reply_markup"].to_dict())
+
+
+def test_intro_in_command_list():
+    assert "intro" in [c for c, _ in bot.COMMANDS]
+
+
+# ---------------- log retention ----------------
+
+def test_clean_old_logs_keeps_last_12_hours(tmp_path):
+    import os
+    import time
+    now = time.time()
+    files = {"bot.log": now - 99 * 3600, "bot.log.2026-11-27_01": now - 13 * 3600,
+             "bot.log.2026-11-27_10": now - 2 * 3600, "old.txt": now - 48 * 3600}
+    for name, mtime in files.items():
+        p = tmp_path / name
+        p.write_text("x")
+        os.utime(p, (mtime, mtime))
+    removed = bot.clean_old_logs(tmp_path, hours=12)
+    assert sorted(removed) == ["bot.log.2026-11-27_01", "old.txt"]
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["bot.log", "bot.log.2026-11-27_10"]
+    assert bot.clean_old_logs(tmp_path / "missing") == []
+
+
+def test_log_retention_default_is_12h():
+    assert settings.log_retention_hours == 12
+
+
+def test_file_logging_rotates_hourly_and_keeps_12(monkeypatch):
+    import logging
+    import main
+    root = logging.getLogger()
+    before = list(root.handlers)
+    try:
+        main.setup_logging()
+        fh = [h for h in root.handlers if h not in before and hasattr(h, "backupCount")][0]
+        assert fh.when == "H" and fh.interval == 3600 and fh.backupCount == 12
+    finally:
+        for h in list(root.handlers):
+            if h not in before:
+                root.removeHandler(h)
+                h.close()
+
+
+def test_docker_logs_are_capped():
+    from tests.conftest import ROOT
+    path = ROOT / "docker-compose.yml"
+    if not path.exists():
+        pytest.skip("repo-level file, not copied into the Docker image (checked by hooks and CI)")
+    compose = path.read_text()
+    assert 'max-size: "1m"' in compose and 'max-file: "2"' in compose and "restart: unless-stopped" in compose

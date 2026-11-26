@@ -13,6 +13,11 @@ fi
 
 export UID; export GID="$(id -g)"
 admin() { docker compose exec -T job-hunter python -m app.admin "$@"; }
+# old job-hunter images and build cache left behind by rebuilds (other projects' images are untouched)
+clean_docker() {
+    docker image prune -f >/dev/null 2>&1 || true            # dangling (<none>) images only
+    docker builder prune -f --filter "until=24h" >/dev/null 2>&1 || true
+}
 need_id() { [[ -n "${1:-}" ]] || { echo "Give the Telegram user ID, e.g.: jobhunter $CMD 123456789 (see: jobhunter users)"; exit 1; }; }
 
 CMD="${1:-help}"
@@ -28,12 +33,12 @@ case "$CMD" in
         echo "== Disk:   $(df -h "$BOT_DIR" | tail -1 | awk '{print $4" free"}') · data: $(du -sh data 2>/dev/null | cut -f1)"
         echo "== Uptime: $(uptime -p)"
         echo "== Last problems"
-        grep -hE "WARNING|ERROR|CRITICAL" data/logs/bot.log 2>/dev/null | tail -n 8 || echo "   none today"
+        grep -hE "WARNING|ERROR|CRITICAL" data/logs/bot.log* 2>/dev/null | tail -n 8 || echo "   none in the last 12 h"
         ;;
     logs)    docker compose logs -f --tail "${1:-100}" ;;
     log)     tail -n "${1:-100}" data/logs/bot.log ;;
     errors)  grep -hE "WARNING|ERROR|CRITICAL" data/logs/bot.log* 2>/dev/null | tail -n "${1:-50}" || echo "none" ;;
-    scans)   grep -h "cycle:" data/logs/bot.log 2>/dev/null | tail -n "${1:-20}" ;;
+    scans)   grep -h "cycle:" data/logs/bot.log* 2>/dev/null | tail -n "${1:-20}" ;;
 
     # ---------------- users
     users)          admin users ;;
@@ -47,8 +52,12 @@ case "$CMD" in
     start)   docker compose up -d ;;
     stop)    docker compose stop ;;
     restart) docker compose restart ;;
-    rebuild) docker compose up -d --build && docker compose ps ;;      # rebuild runs all tests first
-    update)  git pull --ff-only && docker compose up -d --build && docker compose ps ;;
+    rebuild) docker compose up -d --build && clean_docker && docker compose ps ;;   # build runs all tests first
+    update)  git pull --ff-only && docker compose up -d --build && clean_docker && docker compose ps ;;
+    clean)
+        find data/logs -type f ! -name bot.log -mmin +720 -delete 2>/dev/null || true
+        clean_docker
+        echo "== data: $(du -sh data | cut -f1) · free: $(df -h "$BOT_DIR" | tail -1 | awk '{print $4}')" ;;
     test)    if [[ -x .venv/bin/python ]]; then .venv/bin/python -m pytest -q "$@"
              else docker build --target test -t job-hunter:test .; fi ;;
     env)     "${EDITOR:-nano}" .env
@@ -68,7 +77,7 @@ Job Hunter bot — helper commands (run from anywhere, also over SSH)
  Health & logs
    jobhunter health            container, heartbeat, stats, disk, last problems
    jobhunter logs [N]          live output (Ctrl+C to stop)
-   jobhunter log [N]           last N lines of today's log file
+   jobhunter log [N]           last N lines of the current log (logs are kept 12 h)
    jobhunter errors [N]        recent warnings / errors (last 7 days)
    jobhunter scans [N]         last scan cycles (searches, new jobs, matches)
 
@@ -80,8 +89,9 @@ Job Hunter bot — helper commands (run from anywhere, also over SSH)
 
  Bot
    jobhunter start | stop | restart
-   jobhunter rebuild           rebuild the image (runs every test first) and restart
+   jobhunter rebuild           rebuild the image (runs every test first), restart, clean old images
    jobhunter update            git pull + rebuild
+   jobhunter clean             free space: old logs (>12 h), old images, build cache
    jobhunter test              run the test suite
    jobhunter env               edit .env, then restart
    jobhunter backup            save .env + database + resumes to ~/jobhunter-backup-<date>.tar.gz

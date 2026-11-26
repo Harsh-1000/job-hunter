@@ -43,6 +43,8 @@ class Settings:
     delay_max: float = _float("REQUEST_DELAY_MAX", 5)
     max_cooldown_minutes: int = _int("MAX_COOLDOWN_MINUTES", 60)
 
+    # Logs (data/logs) are rotated hourly and deleted after this many hours.
+    log_retention_hours: int = max(1, _int("LOG_RETENTION_HOURS", 12))
     max_resume_mb: float = _float("MAX_RESUME_MB", 5)
     timezone: str = os.getenv("TIMEZONE", "Asia/Kolkata")
     data_dir: Path = ROOT / os.getenv("DATA_DIR", "data")

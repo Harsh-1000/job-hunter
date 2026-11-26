@@ -39,7 +39,7 @@
 
 | File | Responsibility |
 |---|---|
-| `main.py` | Logging (stdout + `data/logs/bot.log`, rotated daily, kept 7 days), DB init, starts polling |
+| `main.py` | Logging (stdout + `data/logs/bot.log`, rotated **hourly**, kept **12 h**), DB init, starts polling |
 | `app/config.py` | Server-wide settings from `.env` (token, admins, access mode, scan interval, delays) |
 | `app/bot.py` | All Telegram handlers, access control, filter menu, resume upload, delivery, Clear chat, jobs |
 | `app/ui.py` | Every text and keyboard the user sees (no I/O → unit-tested directly) |
@@ -180,7 +180,7 @@ data/users/<telegram_user_id>/      0700
 
 **Main menu** (persistent keyboard): 🔍 Find jobs now · ⚙️ Filters · 📄 My resume · 📊 Status · ⭐ Saved · 💡 Insights · ⏯ Pause / Resume · 🧹 Clear chat · ❓ Help
 
-**Commands**: `/start /help /scan /filters /resume (/cv) /keywords … /location … /threshold N /years N /saved (/applied) /insights /status /pause /clear /deleteme`. Admin only: `/users /approve <id> /block <id>`.
+**Commands**: `/start /intro (/tour /guide) /help /scan /filters /resume (/cv) /keywords … /location … /threshold N /years N /saved (/applied) /insights /status /pause /clear /deleteme`. Admin only: `/users /approve <id> /block <id>`.
 
 * **Filters menu** (inline):
   * multi-select toggles for experience level, job type and work type;
@@ -189,6 +189,11 @@ data/users/<telegram_user_id>/      0700
   * free-text prompts for keywords, locations, excluded words and companies, max applicants, quiet hours and your years.
 * **Access**: `ACCESS_MODE=approval` (default). A new user is `pending`, and admins get ✅ Approve / 🚫 Block buttons; the user is told when they're approved. The first user ever becomes admin when `ADMIN_IDS` is empty. `open` mode lets anyone in, up to `MAX_USERS`.
 * **Clear chat**: every message the bot sends, and every message the user sends, is recorded in `messages`. 🧹 offers *Clear everything* or *Clear but keep job alerts*. It deletes in batches of 100 with `deleteMessages`, then sends a fresh menu. Telegram only lets bots delete messages from the **last 48 h**; older ones stay, and the user can use Telegram's own "Clear history" for those.
+* **Guided tour** (`/intro`, also offered as a 📖 Take the tour button after /start, approval and /help):
+  7 pages with ◀️ / ▶️ buttons: what the bot is · sending your resume · filters · how the match % works ·
+  job alerts & buttons · every menu button · privacy & tips. Pages live in `ui.INTRO_PAGES`. It works even
+  for users still waiting for approval. A test checks every feature and menu button is explained, so **when you add
+  a feature, add it to the tour**.
 * **Insights**: from the last 30 days of the user's matches: the average and best match, the top "missing" skills (what to learn next), their most-wanted skills, and the most active companies.
 * **Manual scan**: runs only that user's searches, at most once every `MANUAL_SCAN_COOLDOWN_SECONDS`. It shares a lock with the scheduled cycle.
 
@@ -205,7 +210,16 @@ data/users/<telegram_user_id>/      0700
   * `restart: unless-stopped`, and Docker itself is enabled at boot, so **the bot starts on boot and after crashes**;
   * runs as your host UID/GID, so `./data` stays yours;
   * mounts `./data` and `./.env` (read-only);
-  * logs capped at 3 × 5 MB.
+  * Docker's own copy of the output is capped at 2 × 1 MB.
+
+### Disk usage / log retention
+| What | Limit |
+|---|---|
+| `data/logs/bot.log*` | rotated every hour, `LOG_RETENTION_HOURS` (12) files kept; an hourly job and each start delete anything older |
+| Docker container logs | `max-size 1m`, `max-file 2` → at most ~2 MB |
+| Old images / build cache | removed by `jobhunter rebuild` / `jobhunter update` / `jobhunter clean` |
+| Database | prune every 6 h: deliveries & jobs > 30 days (applied/saved kept), search history > 35 days, message IDs > 3 days |
+| Resumes | one file per user (a new upload replaces the old one) |
 * **Server setup** (once): `./scripts/install.sh`. It creates the venv and runs the tests, installs the git hooks, links the `jobhunter` command, and starts Docker.
 
 ### `jobhunter` command (like `wnc`)
@@ -218,6 +232,7 @@ jobhunter users | approve <id> | block <id> | make-admin <id> | stats | reset-co
 jobhunter start | stop | restart
 jobhunter rebuild           rebuild (tests run) + restart     ← after you change code
 jobhunter update            git pull + rebuild                ← after pushing from another machine
+jobhunter clean             free space: logs older than 12 h, old images, build cache
 jobhunter test | env | backup | shell
 ```
 
@@ -259,6 +274,7 @@ jobhunter test | env | backup | shell
   2. add a handler branch in `on_filter_button` / `apply_text_setting`;
   3. if LinkedIn supports it, add it to `Query` and `Query.params()`;
   4. if it's applied after fetching, add it to `matcher.evaluate()`.
+* *Any user-facing feature* → also explain it in `ui.INTRO_PAGES` (the tour) and `ui.HELP`.
 * *New menu button* → `ui.MENU_BUTTONS` / `MAIN_KB` plus the `buttons` dict in `bot.build()` (a test checks every button is wired).
 
 ## 12. Configuration (`.env`)
@@ -276,4 +292,5 @@ jobhunter test | env | backup | shell
 | `REQUEST_DELAY_MIN/MAX` | 2 / 5 | seconds between LinkedIn requests |
 | `MAX_COOLDOWN_MINUTES` | 60 | cap for the rate-limit back-off |
 | `MAX_RESUME_MB` | 5 | |
+| `LOG_RETENTION_HOURS` | 12 | hours of log files kept in `data/logs` |
 | `TIMEZONE` | Asia/Kolkata | for quiet hours and display |
