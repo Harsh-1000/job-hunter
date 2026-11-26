@@ -103,7 +103,9 @@ INTRO_PAGES: list[tuple[str, str]] = [
      "🔗 <b>Open on LinkedIn</b>: read & apply\n"
      "✅ <b>Applied</b>: track what you applied to\n"
      "⭐ <b>Save</b>: keep it for later\n"
-     "🙈 <b>Hide</b>: not for me (↩️ Undo is available)\n\n"
+     "🙈 <b>Hide</b>: not for me (↩️ Undo is available)\n"
+     "🤝 <b>Referral message</b>: ready-to-send referral request for that job (connection note, full "
+     "message, follow-up) + links to find people at the company\n\n"
      "The same role posted in several cities is sent only once."),
     ("🧭 The menu buttons",
      "🔍 <b>Find jobs now</b>: search right away (otherwise automatic every few minutes)\n"
@@ -200,7 +202,27 @@ def job_kb(row, state: str = "") -> InlineKeyboardMarkup:
                      B("🙈 Hide", callback_data=f"j:hidden:{jid}")])
     else:
         rows.append([B("↩️ Undo", callback_data=f"j:sent:{jid}")])
+    rows.append([B("🤝 Referral message", callback_data=f"ref:{jid}")])
     return InlineKeyboardMarkup(rows)
+
+
+def referral_text(ref, title: str, company: str) -> str:
+    return (f"🤝 <b>Referral messages</b> — {e(title)} at {e(company)}\n"
+            "<i>Tap a grey box to copy it. Replace [Name] with the person's first name.</i>\n\n"
+            f"<b>1️⃣ Connection request note</b> ({len(ref.note)}/200 characters)\n"
+            f"<pre>{e(ref.note)}</pre>\n\n"
+            "<b>2️⃣ Full message</b>: send after they accept, or as a DM / email\n"
+            f"<pre>{e(ref.message)}</pre>\n\n"
+            f"<b>✉️ Email subject</b>\n<pre>{e(ref.subject)}</pre>\n\n"
+            f"<b>3️⃣ Follow-up</b>: if there's no reply in 4–5 days\n<pre>{e(ref.followup)}</pre>\n\n"
+            "💡 <b>Who to ask:</b> 2–3 people in a similar role (they get referral bonuses), or a recruiter. "
+            "Be quick: referrals work best in the first days after a job is posted.")
+
+
+def referral_kb(ref, company: str) -> InlineKeyboardMarkup:
+    short = company[:22]
+    return InlineKeyboardMarkup([[B(f"🔎 People at {short}", url=ref.employees_url)],
+                                 [B(f"🔎 Recruiters at {short}", url=ref.recruiters_url)]])
 
 
 JOB_STATES = {"applied": "✅ <b>Applied</b>", "saved": "⭐ <b>Saved</b>", "hidden": "🙈 <i>Hidden</i>", "sent": ""}

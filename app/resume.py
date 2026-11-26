@@ -27,6 +27,7 @@ class ResumeProfile:
     suggested_keywords: list[str] = field(default_factory=list)
     file_name: str = ""
     chars: int = 0
+    name: str = ""                                         # candidate's name (first lines of the resume)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -188,6 +189,20 @@ def suggest_keywords(skills: list[str], titles: list[str]) -> list[str]:
     return out[:6] or ["Software Engineer"]
 
 
+NOT_NAME = re.compile(r"resume|curriculum|vitae|\bcv\b|profile|summary|@|\d|http|www|linkedin|github", re.I)
+
+
+def find_name(text: str) -> str:
+    """The candidate's name: the first short line of 2-4 capitalised words near the top."""
+    for line in [ln.strip() for ln in text.splitlines() if ln.strip()][:6]:
+        line = re.split(r"\s{3,}|\||·|•", line)[0].strip()
+        words = line.split()
+        if (2 <= len(words) <= 4 and len(line) <= 40 and not NOT_NAME.search(line)
+                and all(re.fullmatch(r"[A-Za-z][A-Za-z.'-]*", w) for w in words)):
+            return " ".join(w if w.isupper() and len(w) <= 2 else w.capitalize() for w in words)
+    return ""
+
+
 def build_profile(text: str, file_name: str = "", today: date | None = None) -> ResumeProfile:
     found = find_skills(text)
     skills = [s for s, _ in sorted(found.items(), key=lambda kv: (-kv[1], kv[0]))]
@@ -195,4 +210,4 @@ def build_profile(text: str, file_name: str = "", today: date | None = None) -> 
     titles = find_titles(text)
     return ResumeProfile(skills=skills, years=years, years_source=source, titles=titles,
                          suggested_keywords=suggest_keywords(skills, titles), file_name=file_name,
-                         chars=len(text))
+                         chars=len(text), name=find_name(text))

@@ -16,11 +16,11 @@ from telegram.error import BadRequest, Forbidden, NetworkError, TelegramError, T
 from telegram.ext import (Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler,
                           TypeHandler, filters)
 
-from . import db, storage, ui
+from . import db, referral, storage, ui
 from .config import settings
 from .filters import (MAX_KEYWORDS, MAX_LOCATIONS, POSTED, SENIOR_WORDS, Filters, parse_applicants, parse_list,
                       parse_quiet_hours, parse_threshold, parse_years)
-from .resume import ResumeError, build_profile, extract_text
+from .resume import ResumeError, build_profile, extract_text, find_name
 from .scanner import Scanner, in_cooldown, reevaluate_user, user_context
 
 log = logging.getLogger(__name__)
@@ -527,6 +527,33 @@ async def on_job_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE, user) ->
 
 
 @active_only
+async def on_referral_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE, user) -> None:
+    q = update.callback_query
+    job_id = q.data.split(":", 1)[1]
+    row = db.get_delivery(user["id"], job_id)
+    if not row:
+        return await q.answer("That job is no longer available.", show_alert=True)
+    await q.answer("Writing your referral messages…")
+    f, p = load(user["id"])
+    name = (p.name if p and p.name else "") or _name_from_saved_resume(user["id"]) or (user["first_name"] or "")
+    matched = json.loads(row["details"] or "{}").get("match", {}).get("matched", [])
+    ref = referral.build(row["title"], row["company"], job_id, row["url"], matched, p, name,
+                         f.years(p.years if p else None) if (p or f.my_years is not None) else None,
+                         fallback_role=f.keywords[0] if f.keywords else "")
+    await reply(update, ctx, ui.referral_text(ref, row["title"], row["company"]),
+                reply_markup=ui.referral_kb(ref, referral.clean_company(row["company"])))
+
+
+def _name_from_saved_resume(user_id: int) -> str:
+    """Resumes uploaded before names were parsed: read it from the saved text."""
+    path = storage.user_dir(user_id) / "resume.txt.extracted"
+    try:
+        return find_name(path.read_text()[:2000]) if path.exists() else ""
+    except OSError:
+        return ""
+
+
+@active_only
 async def cmd_saved(update: Update, ctx: ContextTypes.DEFAULT_TYPE, user) -> None:
     out = []
     for status, title in (("saved", "⭐ Saved"), ("applied", "✅ Applied")):
@@ -827,6 +854,7 @@ def build() -> Application:
     app.add_handler(MessageHandler(private & filters.TEXT & ~filters.COMMAND, on_text))
     app.add_handler(CallbackQueryHandler(on_filter_button, pattern=r"^f:"))
     app.add_handler(CallbackQueryHandler(on_job_button, pattern=r"^j:"))
+    app.add_handler(CallbackQueryHandler(on_referral_button, pattern=r"^ref:"))
     app.add_handler(CallbackQueryHandler(on_resume_button, pattern=r"^r:"))
     app.add_handler(CallbackQueryHandler(on_clear_button, pattern=r"^c:"))
     app.add_handler(CallbackQueryHandler(on_admin_button, pattern=r"^a:"))

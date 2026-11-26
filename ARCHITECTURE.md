@@ -12,7 +12,7 @@
 2. They send their **resume** (PDF / DOCX / TXT). The bot pulls out their skills, years of experience and job titles, and suggests search keywords.
 3. They set **filters** from the ⚙️ menu: keywords, locations, date posted, experience level, job type, on-site/remote/hybrid, Easy Apply, **match threshold**, max years a job may ask for, title words / companies to skip, max applicants, and quiet hours.
 4. Every `SCAN_EVERY_MINUTES` (default **3**), the bot searches LinkedIn for every user's keywords × locations, newest first. It scores each new job against that user's resume and sends the ones at or above their threshold (default 0 = everything).
-5. Each alert shows the match %, the skills they have, the skills the job also wants, and buttons: 🔗 Open · ✅ Applied · ⭐ Save · 🙈 Hide.
+5. Each alert shows the match %, the skills they have, the skills the job also wants, and buttons: 🔗/⚡ Open · ✅ Applied · ⭐ Save · 🙈 Hide · 🤝 Referral message.
 
 ---
 
@@ -51,6 +51,7 @@
 | `app/filters.py` | `Filters` dataclass (stored as JSON per user), `Query` (one LinkedIn search), parsers |
 | `app/db.py` | SQLite schema + queries |
 | `app/storage.py` | `data/users/<telegram_id>/` folders |
+| `app/referral.py` | Job-specific referral request messages (template-based) + LinkedIn people-search links |
 | `app/admin.py` | `python -m app.admin users / approve / block / make-admin / stats / reset-cooldown` |
 
 ---
@@ -216,6 +217,12 @@ data/users/<telegram_user_id>/      0700
   job alerts & buttons · every menu button · privacy & tips. Pages live in `ui.INTRO_PAGES`. It works even
   for users still waiting for approval. A test checks every feature and menu button is explained, so **when you add
   a feature, add it to the tour**.
+* **🤝 Referral message** (a button on every alert, `ref:<job_id>`). `referral.build()` fills templates with the job (title, cleaned company name, job ID, link, the job's skills that the user has) and the resume (name from the first lines, current role, years). It produces:
+  * a **connection note**: the richest variant that fits LinkedIn's 200-character limit;
+  * a **full message**, which doubles as a DM or email, plus an email subject;
+  * a **follow-up**;
+  * buttons to open LinkedIn people search for employees and for recruiters at the company.
+  Messages come in `<pre>` blocks, so they're tap-to-copy. It's template-based: no AI, no cost, nothing leaves the server. A user can only generate messages for their own jobs.
 * **Insights**: from the last 30 days of the user's matches: the average and best match, the top "missing" skills (what to learn next), their most-wanted skills, and the most active companies.
 * **Manual scan**: runs only that user's searches, at most once every `MANUAL_SCAN_COOLDOWN_SECONDS`. It shares a lock with the scheduled cycle.
 
@@ -272,6 +279,7 @@ jobhunter test | env | backup | shell
 | `test_linkedin.py` | HTML parsing on saved real pages, params sent, 429 back-off / give-up, last page |
 | `test_db.py` | users, deliveries, duplicates, 48 h message window, pruning |
 | `test_scanner.py` | full cycles, shared searches, single detail fetch, paging, back-fill, duplicates, pause, rate-limit cooldown & recovery, re-evaluation |
+| `test_referral.py` | every message is job-specific, the note stays ≤ 200 chars even with huge titles, no-resume fallback, name parsing, people-search links, handler + isolation |
 | `test_bot.py` | approval flow, admin-only, resume upload, filter buttons & text, job buttons, user isolation, delivery cap/quiet/pause/blocked, Clear chat, /deleteme, manual scan cooldown |
 
 **The tests run automatically:**
