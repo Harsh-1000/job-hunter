@@ -153,6 +153,7 @@ footer { margin-top: 64px; color: var(--muted); font-size: 13.5px; border-top: 1
   <div class="grid" style="margin-top:14px">
     <div class="card"><h3>No LinkedIn account</h3><p class="muted">It uses the public <code>jobs-guest</code> endpoints that visitors who aren't signed in see. Nothing can get an account blocked.</p></div>
     <div class="card"><h3>Shared searches</h3><p class="muted">Users with the same keyword + location + filters share one request. Each job description is fetched once and scored for everyone.</p></div>
+    <div class="card"><h3>⚡ Easy Apply only by default</h3><p class="muted">Searches use <code>f_AL=true</code>, and each job page's apply button is checked (simple = Easy Apply, offsite = company site). Alerts carry an ⚡ Easy Apply badge. One tap in Filters turns it off.</p></div>
     <div class="card"><h3>⚡ Just posted by default</h3><p class="muted">Every 3 min, newest first. Only jobs ≤ 30 min old are sent (LinkedIn's "x minutes ago"); older ones are skipped before even fetching them. Users can widen to past hour / 24 h / week in Filters.</p></div>
     <div class="card"><h3>Polite by design</h3><p class="muted">2–5 s between requests, retries on HTTP 429, then a 10→60 min cooldown. Scans run every 3 min, newest first.</p></div>
   </div>
