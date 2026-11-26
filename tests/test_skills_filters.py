@@ -37,7 +37,7 @@ def test_find_skills_counts_mentions():
 
 def test_defaults():
     f = Filters()
-    assert f.locations == ["India"] and f.posted == "live" and f.min_score == 0
+    assert f.locations == ["New Delhi, Delhi, India"] and f.posted == "live" and f.min_score == 0
     assert f.experience_levels == ["2", "3", "4"] and "senior" in f.exclude_words
     assert f.easy_apply is True
     from app.filters import queries_for
@@ -121,6 +121,28 @@ def test_parse_years_quiet_applicants():
 
 def test_summary_mentions_everything():
     s = summary(Filters(keywords=["AI Engineer"], min_score=20), 2.0)
-    for part in ("AI Engineer", "India", "Just posted", "≤ 30 min", "Entry level", "20%", "Max years"):
+    for part in ("AI Engineer", "Delhi NCR", "Just posted", "≤ 30 min", "Entry level", "20%", "Max years"):
         assert part in s
     assert "send all" in summary(Filters(), None)
+
+
+
+# ---------- locations ----------
+
+@pytest.mark.parametrize("typed,linkedin", [
+    ("Delhi NCR", "New Delhi, Delhi, India"),     # as typed, LinkedIn maps this to Lansing, Michigan!
+    ("  delhi ncr. ", "New Delhi, Delhi, India"),
+    ("NCR", "New Delhi, Delhi, India"), ("New Delhi", "New Delhi, Delhi, India"),
+    ("Gurgaon", "Gurugram, Haryana, India"), ("noida", "Noida, Uttar Pradesh, India"),
+    ("Bangalore", "Bengaluru, Karnataka, India"), ("India", "India"),
+    ("Dubai, United Arab Emirates", "Dubai, United Arab Emirates"),   # unknown: passed through
+])
+def test_normalize_location(typed, linkedin):
+    from app.filters import normalize_location
+    assert normalize_location(typed) == linkedin
+
+
+def test_default_location_is_delhi_ncr_in_search_and_summary():
+    q = queries_for(Filters(keywords=["AI Engineer"]))[0]
+    assert q.params()["location"] == "New Delhi, Delhi, India"
+    assert "Delhi NCR (Delhi, Gurugram, Noida)" in summary(Filters(), None)

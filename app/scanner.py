@@ -104,6 +104,22 @@ def judge(user_id: int, row, f: Filters, profile: ResumeProfile | None) -> str:
     return status
 
 
+def migrate_location_default() -> int:
+    """One-time: users still on the old default location 'India' move to Delhi NCR. Returns how many changed."""
+    from .filters import DEFAULT_LOCATION
+    if db.get_meta("migrated_location_default") == "1":
+        return 0
+    changed = 0
+    for u in db.users():
+        f = Filters.from_json(u["filters"])
+        if f.locations == ["India"]:
+            f.locations = [DEFAULT_LOCATION]
+            db.update_user(u["id"], filters=f.to_json())
+            changed += 1
+    db.set_meta("migrated_location_default", "1")
+    return changed
+
+
 def migrate_easy_apply_default() -> int:
     """One-time: existing users get the new Easy Apply-only default. Returns how many changed."""
     if db.get_meta("migrated_easy_apply_default") == "1":

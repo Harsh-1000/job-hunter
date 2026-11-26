@@ -18,7 +18,8 @@ from telegram.ext import (Application, CallbackQueryHandler, CommandHandler, Con
 
 from . import db, referral, storage, ui
 from .config import settings
-from .filters import (MAX_KEYWORDS, MAX_LOCATIONS, POSTED, SENIOR_WORDS, Filters, parse_applicants, parse_list,
+from .filters import (MAX_KEYWORDS, MAX_LOCATIONS, POSTED, SENIOR_WORDS, Filters, location_label,
+                      normalize_location, parse_applicants, parse_list,
                       parse_quiet_hours, parse_threshold, parse_years)
 from .resume import ResumeError, build_profile, extract_text, find_name
 from .scanner import Scanner, in_cooldown, reevaluate_user, user_context
@@ -448,11 +449,11 @@ def apply_text_setting(f: Filters, key: str, text: str) -> str:
         msg = f"➕ Added: {', '.join(added) or 'nothing new'}"
         return msg + (f" · skipped (already there or list full): {', '.join(skipped)}" if skipped else "")
     if key == "loc":
-        locs = parse_list(t, MAX_LOCATIONS)
+        locs = list(dict.fromkeys(normalize_location(x) for x in parse_list(t, MAX_LOCATIONS)))
         if not locs:
             raise ValueError("Send at least one location.")
         f.locations = locs
-        return f"📍 Locations: {', '.join(locs)}"
+        return f"📍 Locations: {', '.join(location_label(x) for x in locs)}"
     if key == "excl":
         f.exclude_words = [] if t.lower() == "none" else [w.lower() for w in parse_list(t, 30, 30)]
         return f"🚫 Skipping titles with: {', '.join(f.exclude_words) or 'nothing'}"

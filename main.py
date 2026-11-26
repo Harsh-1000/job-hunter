@@ -36,7 +36,9 @@ def main() -> None:
     from app.bot import clean_old_logs
     clean_old_logs()
     db.init()
-    from app.scanner import migrate_easy_apply_default, migrate_live_default
+    from app.scanner import migrate_easy_apply_default, migrate_live_default, migrate_location_default
+    if n := migrate_location_default():
+        logging.getLogger(__name__).info("switched %d user(s) to the Delhi NCR default location", n)
     if n := migrate_live_default():
         logging.getLogger(__name__).info("switched %d user(s) to the live (just posted) default", n)
     if n := migrate_easy_apply_default():

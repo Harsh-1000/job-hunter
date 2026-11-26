@@ -128,7 +128,8 @@ def test_delete_resume_button():
 @pytest.mark.parametrize("key,text,check", [
     ("kw", "AI Engineer, GenAI Engineer, LLM Engineer", lambda f: f.keywords == ["AI Engineer", "GenAI Engineer",
                                                                                  "LLM Engineer"]),
-    ("loc", "Bengaluru, Remote", lambda f: f.locations == ["Bengaluru", "Remote"]),
+    ("loc", "Bengaluru, Remote", lambda f: f.locations == ["Bengaluru, Karnataka, India", "Remote"]),
+    ("loc", "Delhi NCR, ncr, Gurgaon", lambda f: f.locations == ["New Delhi, Delhi, India", "Gurugram, Haryana, India"]),
     ("excl", "Senior, Lead", lambda f: f.exclude_words == ["senior", "lead"]),
     ("excl", "none", lambda f: f.exclude_words == []),
     ("comp", "Foo Inc, Bar", lambda f: f.exclude_companies == ["Foo Inc", "Bar"]),

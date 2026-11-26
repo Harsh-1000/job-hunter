@@ -104,6 +104,12 @@ If a user changes their filters or resume, `reevaluate_user()` re-scores their r
 
 ---
 
+### 📍 Location: Delhi NCR (default) and location names
+* LinkedIn geocodes free text, and sometimes gets it wrong: **"Delhi NCR" returns jobs in Lansing, Michigan (USA)**. "New Delhi, Delhi, India" returns Delhi, Gurugram, Noida and Gurgaon.
+* `filters.DEFAULT_LOCATION = "New Delhi, Delhi, India"`, shown to users as "Delhi NCR (Delhi, Gurugram, Noida)".
+* `normalize_location()` turns what users type (Delhi NCR, NCR, Gurgaon, Bangalore, Mumbai…) into LinkedIn's exact strings via `LOCATION_ALIASES`. Unknown text is passed through unchanged. **When you add a city, add it to the aliases and test it.**
+* A one-time migration (`migrate_location_default`) moved users from the old "India" default to Delhi NCR.
+
 ### ⚡ Easy Apply only (default)
 * `Filters.easy_apply` defaults to **True**, so searches send `f_AL=true`.
 * The job page is also checked: `linkedin.detect_easy_apply()` looks for the `public_jobs_apply-link-simple` marker (Easy Apply) or `…-offsite` (company site), stored as `jobs.easy_apply`.
@@ -280,6 +286,7 @@ jobhunter test | env | backup | shell
 | `test_db.py` | users, deliveries, duplicates, 48 h message window, pruning |
 | `test_scanner.py` | full cycles, shared searches, single detail fetch, paging, back-fill, duplicates, pause, rate-limit cooldown & recovery, re-evaluation |
 | `test_referral.py` | every message is job-specific, the note stays ≤ 200 chars even with huge titles, no-resume fallback, name parsing, people-search links, handler + isolation |
+| (locations) | `test_skills_filters.py::test_normalize_location`: Delhi NCR → New Delhi string, aliases, pass-through |
 | `test_bot.py` | approval flow, admin-only, resume upload, filter buttons & text, job buttons, user isolation, delivery cap/quiet/pause/blocked, Clear chat, /deleteme, manual scan cooldown |
 
 **The tests run automatically:**

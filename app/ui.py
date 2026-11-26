@@ -78,7 +78,7 @@ INTRO_PAGES: list[tuple[str, str]] = [
     ("⚙️ Step 2: Set your filters",
      "Tap <b>⚙️ Filters</b>. The same filters LinkedIn has:\n"
      "🔎 Job titles / keywords: add or remove as many as you like (up to 10)\n"
-     "📍 Location · 🕒 Date posted: default <b>⚡ Just posted</b> (only jobs a few minutes old), "
+     "📍 Location (default <b>Delhi NCR</b>: Delhi, Gurugram, Noida) · 🕒 Date posted: default <b>⚡ Just posted</b> (only jobs a few minutes old), "
      "or past hour / 6 h / 24 h / week / month\n"
      "🎓 Experience level · 📄 Job type · 🏠 On-site / Remote / Hybrid\n"
      "⚡ Easy Apply only: <b>ON by default</b>, so every job can be applied to in a minute on LinkedIn. "
@@ -314,8 +314,8 @@ PROMPTS = {
     "kw": "✏️ Send your <b>full list of job titles / keywords</b>, separated by commas (max 10). "
           "This replaces the current list.\n"
           "e.g. <code>AI Engineer, Generative AI Engineer, Backend Developer</code>",
-    "loc": "📍 Send <b>locations</b>, separated by commas (max 3).\n"
-           "e.g. <code>India</code> or <code>Bengaluru, Noida, Remote</code>",
+    "loc": "📍 Send <b>locations</b>, separated by commas (max 3). Default: Delhi NCR.\n"
+           "e.g. <code>Delhi NCR</code>, <code>Bengaluru, Pune</code> or <code>India</code> (whole country)",
     "excl": "🚫 Send <b>words that should skip a job</b> when in the title, comma separated "
             "(or <code>none</code>).\ne.g. <code>senior, lead, manager, intern</code>",
     "comp": "🏢 Send <b>companies to skip</b>, comma separated (or <code>none</code>).",

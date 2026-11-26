@@ -23,6 +23,38 @@ LIVE_SEARCH_WINDOW = "r3600"   # LinkedIn window searched in live mode; the age 
 POSTED = {LIVE: "⚡ Just posted (live)", "r3600": "Past hour", "r21600": "Past 6 hours", "r86400": "Past 24 hours",
           "r604800": "Past week", "r2592000": "Past month"}
 
+# LinkedIn geocodes free-text locations, sometimes badly: "Delhi NCR" becomes Lansing, Michigan (USA)!
+# Common names are mapped to the exact strings LinkedIn's own location box uses.
+DELHI_NCR = "New Delhi, Delhi, India"       # LinkedIn covers Delhi + Gurugram + Noida + Ghaziabad from this
+DEFAULT_LOCATION = DELHI_NCR
+LOCATION_ALIASES = {
+    "delhi ncr": DELHI_NCR, "ncr": DELHI_NCR, "delhi": DELHI_NCR, "new delhi": DELHI_NCR,
+    "delhi/ncr": DELHI_NCR, "delhi-ncr": DELHI_NCR, "national capital region": DELHI_NCR,
+    "gurgaon": "Gurugram, Haryana, India", "gurugram": "Gurugram, Haryana, India",
+    "noida": "Noida, Uttar Pradesh, India", "greater noida": "Greater Noida, Uttar Pradesh, India",
+    "ghaziabad": "Ghaziabad, Uttar Pradesh, India", "faridabad": "Faridabad, Haryana, India",
+    "bangalore": "Bengaluru, Karnataka, India", "bengaluru": "Bengaluru, Karnataka, India",
+    "mumbai": "Mumbai, Maharashtra, India", "bombay": "Mumbai, Maharashtra, India",
+    "pune": "Pune, Maharashtra, India", "hyderabad": "Hyderabad, Telangana, India",
+    "chennai": "Chennai, Tamil Nadu, India", "kolkata": "Kolkata, West Bengal, India",
+    "ahmedabad": "Ahmedabad, Gujarat, India", "jaipur": "Jaipur, Rajasthan, India",
+    "chandigarh": "Chandigarh, India", "indore": "Indore, Madhya Pradesh, India",
+    "agra": "Agra, Uttar Pradesh, India", "lucknow": "Lucknow, Uttar Pradesh, India",
+    "india": "India", "remote india": "India",
+}
+LOCATION_LABELS = {DELHI_NCR: "Delhi NCR (Delhi, Gurugram, Noida)"}
+
+
+def normalize_location(text: str) -> str:
+    """What the user typed -> the string LinkedIn understands ('Delhi NCR' -> 'New Delhi, Delhi, India')."""
+    key = re.sub(r"\s+", " ", (text or "").strip().lower()).strip(" .,")
+    return LOCATION_ALIASES.get(key, (text or "").strip())
+
+
+def location_label(loc: str) -> str:
+    return LOCATION_LABELS.get(loc, loc)
+
+
 SENIOR_WORDS = ["senior", "sr", "lead", "principal", "staff", "architect", "manager", "director", "head", "vp"]
 MAX_KEYWORDS = 10
 MAX_LOCATIONS = 3
@@ -31,7 +63,7 @@ MAX_LOCATIONS = 3
 @dataclass
 class Filters:
     keywords: list[str] = field(default_factory=list)
-    locations: list[str] = field(default_factory=lambda: ["India"])
+    locations: list[str] = field(default_factory=lambda: [DEFAULT_LOCATION])
     posted: str = LIVE
     experience_levels: list[str] = field(default_factory=lambda: ["2", "3", "4"])
     job_types: list[str] = field(default_factory=list)      # empty = any
@@ -118,7 +150,7 @@ def live_minutes() -> int:
 def queries_for(f: Filters) -> list[Query]:
     return [Query(kw, loc, f.posted, tuple(f.experience_levels), tuple(f.job_types), tuple(f.work_types),
                   f.easy_apply)
-            for kw in f.keywords for loc in (f.locations or ["India"])]
+            for kw in f.keywords for loc in (f.locations or [DEFAULT_LOCATION])]
 
 
 # ---- parsing what users type in the chat ----
@@ -174,7 +206,7 @@ def summary(f: Filters, resume_years: float | None = None) -> str:
     quiet = f"{f.quiet_start:02d}:00–{f.quiet_end:02d}:00" if f.quiet_start is not None else "Off"
     return "\n".join([
         f"🔎 Job titles / keywords: {', '.join(f.keywords) or '— (set some!)'}",
-        f"📍 Location: {', '.join(f.locations) or 'India'}",
+        f"📍 Location: {', '.join(location_label(x) for x in f.locations) or location_label(DEFAULT_LOCATION)}",
         f"🕒 Posted: {POSTED.get(f.posted, f.posted)}" + (f" — only jobs ≤ {live_minutes()} min old"
                                                           if f.posted == LIVE else ""),
         f"🎓 Experience level: {names(f.experience_levels, EXPERIENCE_LEVELS)}",

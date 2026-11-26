@@ -237,3 +237,15 @@ def test_migration_turns_on_easy_apply_once():
     assert Filters.from_json(db.get_user(1)["filters"]).easy_apply is True
     db.update_user(1, filters=Filters(keywords=["x"], easy_apply=False).to_json())
     assert migrate_easy_apply_default() == 0   # a later choice to turn it off is respected
+
+
+
+def test_migration_moves_india_default_to_delhi_ncr_once():
+    from app.scanner import migrate_location_default
+    add_user(1, locations=["India"])
+    add_user(2, locations=["Bengaluru, Karnataka, India"])     # explicit choice: untouched
+    assert migrate_location_default() == 1
+    assert Filters.from_json(db.get_user(1)["filters"]).locations == ["New Delhi, Delhi, India"]
+    assert Filters.from_json(db.get_user(2)["filters"]).locations == ["Bengaluru, Karnataka, India"]
+    db.update_user(1, filters=Filters(keywords=["x"], locations=["India"]).to_json())
+    assert migrate_location_default() == 0                   # a later choice of India is respected
