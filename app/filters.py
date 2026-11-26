@@ -36,7 +36,7 @@ class Filters:
     experience_levels: list[str] = field(default_factory=lambda: ["2", "3", "4"])
     job_types: list[str] = field(default_factory=list)      # empty = any
     work_types: list[str] = field(default_factory=list)     # empty = any
-    easy_apply: bool = False
+    easy_apply: bool = True                # default: only LinkedIn Easy Apply jobs (1-minute apply)
 
     min_score: int = 0                     # 0 = send everything
     max_years: float | None = None         # None = auto (your years + 2)

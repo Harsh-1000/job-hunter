@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     id TEXT PRIMARY KEY,
     title TEXT, company TEXT, location TEXT, url TEXT, posted TEXT, posted_date TEXT,
     posted_at TEXT,                              -- when LinkedIn says it was posted (UTC), from "x min ago"
+    easy_apply INTEGER,                          -- 1 Easy Apply · 0 company site · NULL unknown
     description TEXT, criteria TEXT, applicants TEXT, seniority TEXT, employment_type TEXT,
     detail_status TEXT NOT NULL DEFAULT 'none',  -- none | ok | failed
     detail_attempts INTEGER NOT NULL DEFAULT 0,
@@ -92,6 +93,8 @@ def init() -> None:
         cols = {r[1] for r in c.execute("PRAGMA table_info(jobs)")}
         if "posted_at" not in cols:
             c.execute("ALTER TABLE jobs ADD COLUMN posted_at TEXT")
+        if "easy_apply" not in cols:
+            c.execute("ALTER TABLE jobs ADD COLUMN easy_apply INTEGER")
 
 
 def posted_at_from(text: str, seen: datetime | None = None) -> str | None:
@@ -194,9 +197,10 @@ def save_details(job) -> None:
         c.execute(
             """UPDATE jobs SET description=?, criteria=?, applicants=?, seniority=?, employment_type=?,
                    posted=COALESCE(NULLIF(?, ''), posted), posted_at=COALESCE(posted_at, ?),
-                   detail_status='ok' WHERE id=?""",
+                   easy_apply=?, detail_status='ok' WHERE id=?""",
             (job.description, json.dumps(job.criteria), job.applicants, job.seniority, job.employment_type,
-             job.posted, posted_at_from(job.posted), job.id))
+             job.posted, posted_at_from(job.posted),
+             None if job.easy_apply is None else int(job.easy_apply), job.id))
 
 
 def detail_failed(job_id: str) -> int:
@@ -267,7 +271,7 @@ def add_waiting(user_id: int, job_ids: Iterable[str], keyword: str) -> int:
 def deliveries(user_id: int, statuses: tuple[str, ...], limit: int = 500,
                since_hours: float | None = None) -> list[sqlite3.Row]:
     q = (f"""SELECT d.*, j.title, j.company, j.location, j.url, j.posted, j.applicants, j.seniority,
-                    j.employment_type, j.description, j.detail_status, j.posted_at
+                    j.employment_type, j.description, j.detail_status, j.posted_at, j.easy_apply
              FROM deliveries d JOIN jobs j ON j.id=d.job_id
              WHERE d.user_id=? AND d.status IN ({','.join('?' * len(statuses))})""")
     args: list = [user_id, *statuses]
@@ -284,7 +288,7 @@ def get_delivery(user_id: int, job_id: str) -> sqlite3.Row | None:
     with conn() as c:
         return c.execute(
             """SELECT d.*, j.title, j.company, j.location, j.url, j.posted, j.applicants, j.seniority,
-                      j.employment_type, j.description, j.detail_status, j.posted_at
+                      j.employment_type, j.description, j.detail_status, j.posted_at, j.easy_apply
                FROM deliveries d JOIN jobs j ON j.id=d.job_id WHERE d.user_id=? AND d.job_id=?""",
             (user_id, job_id)).fetchone()
 

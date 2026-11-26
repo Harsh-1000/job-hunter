@@ -241,7 +241,8 @@ def test_toggle_buttons():
         run(bot.on_filter_button(make_update(uid=1, data=data), make_ctx()))
     f = Filters.from_json(db.get_user(1)["filters"])
     assert f.experience_levels == ["3", "4", "1"] and f.work_types == ["2"] and f.job_types == ["F"]
-    assert f.posted == "r3600" and f.min_score == 30 and f.max_years == -1 and f.easy_apply
+    assert f.posted == "r3600" and f.min_score == 30 and f.max_years == -1
+    assert f.easy_apply is False            # default is ON, one tap turns it off
     run(bot.on_filter_button(make_update(uid=1, data="f:exp:any"), make_ctx()))
     assert Filters.from_json(db.get_user(1)["filters"]).experience_levels == []
 
@@ -541,3 +542,26 @@ def test_delivery_runs_while_scan_in_progress_and_never_double_sends():
         return await asyncio.gather(bot.deliver_all(app), bot.deliver_all(app))
     run(go())
     assert len(fb.sent) == 3 and len({m.text for m in fb.sent}) == 3
+
+
+
+# ---------------- ⚡ Easy Apply ----------------
+
+def test_easy_apply_badge_and_button():
+    active(1)
+    pending_job(1)
+    with db.conn() as c:
+        c.execute("UPDATE jobs SET easy_apply=1 WHERE id='1'")
+    row = db.deliveries(1, ("pending",))[0]
+    assert "Easy Apply" in ui.job_text(row)
+    assert ui.job_kb(row).to_dict()["inline_keyboard"][0][0]["text"] == "⚡ Easy Apply on LinkedIn"
+    with db.conn() as c:
+        c.execute("UPDATE jobs SET easy_apply=0 WHERE id='1'")
+    row = db.deliveries(1, ("pending",))[0]
+    assert "company's website" in ui.job_text(row)
+    assert ui.job_kb(row).to_dict()["inline_keyboard"][0][0]["text"] == "🔗 Open on LinkedIn"
+
+
+def test_intro_mentions_easy_apply_default():
+    text = " ".join(ui.intro_text(i) for i in range(len(ui.INTRO_PAGES)))
+    assert "Easy Apply only: <b>ON by default</b>" in text

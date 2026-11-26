@@ -39,6 +39,9 @@ def test_defaults():
     f = Filters()
     assert f.locations == ["India"] and f.posted == "live" and f.min_score == 0
     assert f.experience_levels == ["2", "3", "4"] and "senior" in f.exclude_words
+    assert f.easy_apply is True
+    from app.filters import queries_for
+    assert queries_for(Filters(keywords=["x"]))[0].params()["f_AL"] == "true"
 
 
 def test_json_roundtrip_and_unknown_keys_ignored():

@@ -69,7 +69,7 @@
 | Experience level | `f_E` | 1 Internship · 2 Entry · 3 Associate · 4 Mid-Senior · 5 Director · 6 Executive |
 | Job type | `f_JT` | F Full-time · P Part-time · C Contract · T Temporary · I Internship · V Volunteer · O Other |
 | Work type | `f_WT` | 1 On-site · 2 Remote · 3 Hybrid |
-| Easy Apply | `f_AL` | `true` |
+| Easy Apply | `f_AL` | `true` (**on by default**) |
 | Sort | `sortBy` | `DD` (newest first, always) |
 
 * **Being polite** (LinkedIn returns HTTP 429 to clients that are too fast):
@@ -103,6 +103,13 @@ If a user changes their filters or resume, `reevaluate_user()` re-scores their r
 
 ---
 
+### ⚡ Easy Apply only (default)
+* `Filters.easy_apply` defaults to **True**, so searches send `f_AL=true`.
+* The job page is also checked: `linkedin.detect_easy_apply()` looks for the `public_jobs_apply-link-simple` marker (Easy Apply) or `…-offsite` (company site), stored as `jobs.easy_apply`.
+* Alerts show **⚡ Easy Apply** with an "⚡ Easy Apply on LinkedIn" button, or **🌐 Applies on the company's website**.
+* Users turn it off in ⚙️ Filters → ⚡ Easy Apply only.
+* A one-time migration (`migrate_easy_apply_default`) turned it on for existing users.
+
 ### ⚡ Just posted (live) — the default
 The bot's main job is to send jobs **the moment they're posted**:
 
@@ -118,6 +125,7 @@ The bot's main job is to send jobs **the moment they're posted**:
 
 | Code | Rule |
 |---|---|
+| `not_easy_apply` | Easy Apply only is on (the default) but the job page's apply button goes to the company site (`public_jobs_apply-link-offsite`) |
 | `old` | ⚡ live mode (the default): the job was posted more than `LIVE_MAX_AGE_MINUTES` ago, judged from LinkedIn's "x minutes ago" and stored as `jobs.posted_at`. This is checked **before** the description is fetched. Jobs of unknown age are kept |
 | `title` | title contains an excluded word (whole word; default: senior, sr, lead, principal, staff, architect, manager, director, head, vp) |
 | `company` | company matches an excluded company |

@@ -106,3 +106,13 @@ def test_detail_url():
 def test_posted_age_minutes(text, minutes):
     from app.linkedin import posted_age_minutes
     assert posted_age_minutes(text) == minutes
+
+
+
+def test_detect_easy_apply():
+    from app.linkedin import detect_easy_apply
+    assert detect_easy_apply((FIXTURES / "detail.html").read_text()) is True     # saved real Easy Apply page
+    assert detect_easy_apply('<a data-tracking-control-name="public_jobs_apply-link-offsite_x">') is False
+    assert detect_easy_apply("<html>no button</html>") is None
+    j = parse_detail((FIXTURES / "detail.html").read_text(), Job(id="1", title="t", company="c", location="l"))
+    assert j.easy_apply is True

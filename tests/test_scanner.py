@@ -200,3 +200,40 @@ def test_db_migration_adds_posted_at_to_old_databases():
     db.init()
     with db.conn() as c:
         assert "posted_at" in {r[1] for r in c.execute("PRAGMA table_info(jobs)")}
+
+
+
+def test_offsite_jobs_rejected_when_easy_apply_only():
+    add_user(1)                                   # default: easy_apply on
+
+    class Offsite(FakeLinkedIn):
+        async def details(self, job):
+            await super().details(job)
+            job.easy_apply = job.id != "1"        # job 1 applies on the company site
+            return job
+    listing = {"AI Engineer": [("1", "AI Engineer", "Acme"), ("5", "AI Engineer", "Other")]}
+    run(Scanner(lambda: Offsite(listings=listing, descriptions={"1": GOOD, "5": GOOD})))
+    assert [r["job_id"] for r in db.deliveries(1, ("pending",))] == ["5"]
+    assert db.deliveries(1, ("rejected",))[0]["reason_code"] == "not_easy_apply"
+    assert db.get_job("5")["easy_apply"] == 1 and db.get_job("1")["easy_apply"] == 0
+
+
+def test_easy_apply_off_keeps_offsite_jobs():
+    add_user(1, easy_apply=False)
+
+    class Offsite(FakeLinkedIn):
+        async def details(self, job):
+            await super().details(job)
+            job.easy_apply = False
+            return job
+    run(Scanner(lambda: Offsite(listings=LISTING, descriptions=DESCS)))
+    assert [r["job_id"] for r in db.deliveries(1, ("pending",))] == ["1"]
+
+
+def test_migration_turns_on_easy_apply_once():
+    from app.scanner import migrate_easy_apply_default
+    add_user(1, easy_apply=False)
+    assert migrate_easy_apply_default() == 1
+    assert Filters.from_json(db.get_user(1)["filters"]).easy_apply is True
+    db.update_user(1, filters=Filters(keywords=["x"], easy_apply=False).to_json())
+    assert migrate_easy_apply_default() == 0   # a later choice to turn it off is respected

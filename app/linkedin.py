@@ -53,6 +53,7 @@ class Job:
     industries: str = ""
     applicants: str = ""
     search_keyword: str = ""
+    easy_apply: bool | None = None   # True: LinkedIn Easy Apply · False: applies on the company site
     criteria: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -82,6 +83,15 @@ def applicants_count(text: str) -> int | None:
     """'Over 200 applicants' -> 200, 'Be among the first 25 applicants' -> 25, '35 applicants' -> 35."""
     m = re.search(r"(\d[\d,]*)\s*(?:\+\s*)?applicants?", text or "", re.I)
     return int(m.group(1).replace(",", "")) if m else None
+
+
+def detect_easy_apply(html: str) -> bool | None:
+    """The public job page tags its apply button: '...apply-link-simple' = Easy Apply, '...-offsite' = company site."""
+    if "public_jobs_apply-link-offsite" in html or "offsite-apply" in html:
+        return False
+    if "public_jobs_apply-link-simple" in html:
+        return True
+    return None
 
 
 def parse_search(html: str, keyword: str = "") -> list[Job]:
@@ -125,6 +135,7 @@ def parse_detail(html: str, job: Job) -> Job:
     job.job_function = job.criteria.get("Job function", "")
     job.industries = job.criteria.get("Industries", "")
     job.applicants = _text(soup.select_one(".num-applicants__caption"))
+    job.easy_apply = detect_easy_apply(html)
     if not job.posted:
         job.posted = _text(soup.select_one(".posted-time-ago__text"))
     return job

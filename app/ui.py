@@ -80,7 +80,9 @@ INTRO_PAGES: list[tuple[str, str]] = [
      "🔎 Job titles / keywords: add or remove as many as you like (up to 10)\n"
      "📍 Location · 🕒 Date posted: default <b>⚡ Just posted</b> (only jobs a few minutes old), "
      "or past hour / 6 h / 24 h / week / month\n"
-     "🎓 Experience level · 📄 Job type · 🏠 On-site / Remote / Hybrid · ⚡ Easy Apply\n\n"
+     "🎓 Experience level · 📄 Job type · 🏠 On-site / Remote / Hybrid\n"
+     "⚡ Easy Apply only: <b>ON by default</b>, so every job can be applied to in a minute on LinkedIn. "
+     "Turn it off to also get jobs that apply on the company's website.\n\n"
      "Plus extra filters of mine:\n"
      "🎯 Match threshold · 🧮 Max years a job may ask · 🚫 Skip title words (senior, lead…)\n"
      "🏢 Skip companies · 👥 Max applicants · 🌙 Quiet hours (no pings at night)\n\n"
@@ -160,6 +162,11 @@ def job_text(row, state: str = "") -> str:
     if kind:
         lines.append(f"💼 {e(kind)}")
     lines.append(f"🎓 Experience asked: {e(m.get('years_text', 'not specified'))}")
+    ea = _get(row, "easy_apply")
+    if ea == 1:
+        lines.append("⚡ <b>Easy Apply</b> — apply in a minute on LinkedIn")
+    elif ea == 0:
+        lines.append("🌐 Applies on the company's website")
     score = row["score"]
     if score is None:
         lines.append("🎯 Match: <i>send your resume to see a match %</i>")
@@ -177,9 +184,17 @@ def job_text(row, state: str = "") -> str:
     return "\n".join(lines)
 
 
+def _get(row, key):
+    try:
+        return row[key]
+    except (IndexError, KeyError):
+        return None
+
+
 def job_kb(row, state: str = "") -> InlineKeyboardMarkup:
     jid = row["job_id"]
-    rows = [[B("🔗 Open on LinkedIn", url=row["url"])]]
+    label = "⚡ Easy Apply on LinkedIn" if _get(row, "easy_apply") == 1 else "🔗 Open on LinkedIn"
+    rows = [[B(label, url=row["url"])]]
     if not state:
         rows.append([B("✅ Applied", callback_data=f"j:applied:{jid}"), B("⭐ Save", callback_data=f"j:saved:{jid}"),
                      B("🙈 Hide", callback_data=f"j:hidden:{jid}")])

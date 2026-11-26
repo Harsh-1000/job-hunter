@@ -90,6 +90,10 @@ def judge(user_id: int, row, f: Filters, profile: ResumeProfile | None) -> str:
     if old:
         db.set_result(user_id, row["job_id"], "rejected", None, old, "old")
         return "rejected"
+    if f.easy_apply and row["easy_apply"] == 0:
+        db.set_result(user_id, row["job_id"], "rejected", None, "applies on the company site (you chose Easy Apply only)",
+                      "not_easy_apply")
+        return "rejected"
     if db.is_duplicate(user_id, row["job_id"], row["title"], row["company"]):
         db.set_result(user_id, row["job_id"], "rejected", None, "same role already sent (other city)", "duplicate")
         return "rejected"
@@ -98,6 +102,22 @@ def judge(user_id: int, row, f: Filters, profile: ResumeProfile | None) -> str:
     db.set_result(user_id, row["job_id"], status, m.score, m.reason, m.code,
                   {"match": m.to_dict(), "keyword": row["keyword"]})
     return status
+
+
+def migrate_easy_apply_default() -> int:
+    """One-time: existing users get the new Easy Apply-only default. Returns how many changed."""
+    if db.get_meta("migrated_easy_apply_default") == "1":
+        return 0
+    changed = 0
+    for u in db.users():
+        f = Filters.from_json(u["filters"])
+        if not f.easy_apply:
+            f.easy_apply = True
+            db.update_user(u["id"], filters=f.to_json())
+            reevaluate_user(u["id"])
+            changed += 1
+    db.set_meta("migrated_easy_apply_default", "1")
+    return changed
 
 
 def migrate_live_default() -> int:

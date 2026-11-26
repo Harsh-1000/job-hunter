@@ -36,9 +36,11 @@ def main() -> None:
     from app.bot import clean_old_logs
     clean_old_logs()
     db.init()
-    from app.scanner import migrate_live_default
+    from app.scanner import migrate_easy_apply_default, migrate_live_default
     if n := migrate_live_default():
         logging.getLogger(__name__).info("switched %d user(s) to the live (just posted) default", n)
+    if n := migrate_easy_apply_default():
+        logging.getLogger(__name__).info("switched %d user(s) to the Easy Apply-only default", n)
     if not settings.bot_token:
         sys.exit("Set TELEGRAM_BOT_TOKEN in .env (create the bot with @BotFather first).")
     from app.bot import build
