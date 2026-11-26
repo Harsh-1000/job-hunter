@@ -234,6 +234,8 @@ footer { margin-top: 64px; color: var(--muted); font-size: 13.5px; border-top: 1
       <p class="muted">🔍 Find jobs now · ⚙️ Filters · 📄 My resume · 📊 Status · ⭐ Saved · 💡 Insights · ⏯ Pause / Resume · 🧹 Clear chat · ❓ Help</p>
       <h3 style="margin-top:12px">Filters</h3>
       <p class="muted">Keywords · locations · date posted · experience level · job type · on-site/remote/hybrid · Easy Apply · match threshold · max years · my years · skip title words · skip companies · max applicants · quiet hours</p>
+      <h3 style="margin-top:12px">Guided tour: /intro</h3>
+      <p class="muted">7 pages with ◀️ ▶️ buttons explaining every feature. Offered after /start, approval and /help, and open even to users waiting for approval. Add new features to <code>ui.INTRO_PAGES</code>.</p>
       <h3 style="margin-top:12px">Clear chat</h3>
       <p class="muted">Every message is tracked. Choose "clear everything" or "keep job alerts". Telegram limits bots to messages from the last 48 h.</p>
     </div>
@@ -267,11 +269,15 @@ footer { margin-top: 64px; color: var(--muted); font-size: 13.5px; border-top: 1
       <p class="muted">Multi-stage build: <b>base → test (pytest) → runtime</b>. If a test fails, no image is built. <code>restart: unless-stopped</code> plus Docker enabled at boot means the bot starts on boot and after crashes. The healthcheck watches <code>data/heartbeat</code>.</p>
     </div>
     <div class="card">
+      <h3>Disk stays small</h3>
+      <p class="muted">Log files rotate <b>hourly</b> and are deleted after <b>12 h</b>. Docker logs are capped at ~2 MB. Rebuilds remove old images and build cache. The database prunes itself every 6 h.</p>
+    </div>
+    <div class="card">
       <h3><code>jobhunter</code> command</h3>
 <pre>jobhunter health | logs | errors | scans
 jobhunter users | approve &lt;id&gt; | block &lt;id&gt;
 jobhunter restart | rebuild | update
-jobhunter test | env | backup</pre>
+jobhunter clean | test | env | backup</pre>
     </div>
   </div>
 
