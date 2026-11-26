@@ -96,7 +96,7 @@ every SCAN_EVERY_MINUTES ──► plan ──► search ──► queue per use
    * A cycle fetches at most 60 descriptions; the rest stay `waiting` for the next cycle.
    * After 3 failed fetches, the job is scored on its title only.
 5. **Match.** A duplicate check runs first (same title + company sent in the last 7 days, i.e. reposted in another city). Then `matcher.evaluate()` runs, and the row becomes `pending` (with score) or `rejected` (with a reason code).
-6. **Deliver.** Every 60 s, and right after a cycle, the bot sends `pending` rows best score first, up to `MAX_PER_CYCLE` per user. It skips paused users and users in their quiet hours.
+6. **Deliver.** Every 60 s (also *while* a scan is still running, with its own lock so nothing is sent twice) and right after a cycle, the bot sends `pending` rows best score first, up to `MAX_PER_CYCLE` per user. It skips paused users and users in their quiet hours.
    * If a user has blocked the bot (Forbidden), they're auto-paused.
 
 If a user changes their filters or resume, `reevaluate_user()` re-scores their recent `pending` and `rejected` rows **from the cache, with no new requests**. For example, lowering the threshold sends the newly qualifying jobs right away.

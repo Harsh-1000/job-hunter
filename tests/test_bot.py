@@ -525,3 +525,19 @@ def test_docker_logs_are_capped():
         pytest.skip("repo-level file, not copied into the Docker image (checked by hooks and CI)")
     compose = path.read_text()
     assert 'max-size: "1m"' in compose and 'max-file: "2"' in compose and "restart: unless-stopped" in compose
+
+
+def test_delivery_runs_while_scan_in_progress_and_never_double_sends():
+    active(1)
+    for i in range(3):
+        pending_job(1, str(i), 50, title=f"Role {i}", company=f"C{i}")
+    fb = FakeBot()
+    app = app_with(fb)
+
+    async def go():
+        scan_lock = bot._lock(app)
+        async with scan_lock:                              # a long scan is running…
+            await bot.deliver_job(SimpleNamespace(application=app))   # …delivery still happens
+        return await asyncio.gather(bot.deliver_all(app), bot.deliver_all(app))
+    run(go())
+    assert len(fb.sent) == 3 and len({m.text for m in fb.sent}) == 3

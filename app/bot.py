@@ -670,7 +670,18 @@ async def cmd_scan(update: Update, ctx: ContextTypes.DEFAULT_TYPE, user) -> None
     await msg.edit_text(f"✅ Done: {e(res.summary())}\n⏳ {s.get('pending', 0)} still queued", parse_mode=ParseMode.HTML)
 
 
+def _send_lock(app: Application) -> asyncio.Lock:
+    return app.bot_data.setdefault("send_lock", asyncio.Lock())
+
+
 async def deliver_all(app: Application) -> int:
+    """Send pending jobs. Runs every minute, even while a scan is still going, so matches arrive as soon as
+    they're scored. Its own lock stops two deliveries sending the same job twice."""
+    async with _send_lock(app):
+        return await _deliver(app)
+
+
+async def _deliver(app: Application) -> int:
     total = 0
     hour = datetime.now(ZoneInfo(settings.timezone)).hour
     for u in db.users("active"):
@@ -696,7 +707,7 @@ async def deliver_all(app: Application) -> int:
 
 
 async def deliver_job(ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _lock(ctx.application).locked():
+    if not _send_lock(ctx.application).locked():
         await deliver_all(ctx.application)
 
 
