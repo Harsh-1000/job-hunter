@@ -195,7 +195,8 @@ data/users/<telegram_user_id>/      0700
 | `user_queries` | (`user_id`, `qkey`) | searches a user is attached to (for back-fill) |
 | `deliveries` | (`user_id`, `job_id`) | `status` waiting → pending → sent → applied/saved/hidden, or rejected · `score`, `reason`, `reason_code`, `details` JSON (match breakdown), `message_id` |
 | `messages` | (`chat_id`, `message_id`) | every message in each chat with `kind` ui/job/user, for Clear chat |
-| `meta` | `key` | cooldown, last cycle summary |
+| `meta` | `key` | cooldown, last cycle summary, `alert_open` (watchdog) |
+| `cycles` | — | one row per scheduled scan: ts, searches, listings, new_jobs, matched, error (kept 2 days) |
 
 **Pruning** (every 12 h): deliveries older than 30 days are removed, except applied and saved ones. So are unreferenced jobs older than 30 days, search history older than 35 days, and message IDs older than 3 days.
 
@@ -203,7 +204,7 @@ data/users/<telegram_user_id>/      0700
 
 ## 8. Telegram UX
 
-**Main menu** (persistent keyboard): 🔍 Find jobs now · ⚙️ Filters · 📄 My resume · 📊 Status · ⭐ Saved · 💡 Insights · ⏯ Pause / Resume · 🧹 Clear chat · ❓ Help
+**Main menu** (persistent keyboard): 🟢 Is it working? · 🔍 Find jobs now · ⚙️ Filters · 📄 My resume · 📊 Status · ⭐ Saved · 💡 Insights · ⏯ Pause / Resume · 🧹 Clear chat · ❓ Help
 
 **Commands**: `/start /intro (/tour /guide) /help /scan /filters /resume (/cv) /titles /addtitle … /keywords … /location … /threshold N /years N /saved (/applied) /insights /status /pause /clear /deleteme`. Admin only: `/users /approve <id> /block <id>`.
 
@@ -229,6 +230,14 @@ data/users/<telegram_user_id>/      0700
   * a **follow-up**;
   * buttons to open LinkedIn people search for employees and for recruiters at the company.
   Messages come in `<pre>` blocks, so they're tap-to-copy. It's template-based: no AI, no cost, nothing leaves the server. A user can only generate messages for their own jobs.
+* **🟢 Is it working?** (`/alive`, `/working`, `/check`, or the top menu button). `ui.health_verdict()` decides the state from the last `cycles` row:
+  * 🟢 hunting: the last scan was ≤ 3 × interval ago;
+  * 🟡 slowed down: rate-limit cooldown, or the last scan errored;
+  * 🔴 stopped: no scan for > 3 × interval;
+  * "just restarted": no scan yet and the bot started recently.
+  It also shows the last and next scan, today's numbers for the user (checked / matched / sent / best %, via `db.user_window`), what's being searched, and uptime. The user's own blockers (paused, no titles, no resume) each get a fix button.
+* **🌅 Daily report**: 09:00 (TIMEZONE), last 24 h per user: jobs checked, matched, sent, best match, and whether scans ran all day. `Filters.daily_report` (default on) is toggled in Filters.
+* **In-bot watchdog** (every 5 min): if there's been no scan for > max(15 min, 4 × interval), a cooldown, or 3 failed scans in a row, every admin gets **one** 🔴 alert. When it's healthy again they get ✅ "back to normal".
 * **Insights**: from the last 30 days of the user's matches: the average and best match, the top "missing" skills (what to learn next), their most-wanted skills, and the most active companies.
 * **Manual scan**: runs only that user's searches, at most once every `MANUAL_SCAN_COOLDOWN_SECONDS`. It shares a lock with the scheduled cycle.
 
@@ -257,6 +266,11 @@ data/users/<telegram_user_id>/      0700
 | Resumes | one file per user (a new upload replaces the old one) |
 * **Server setup** (once): `./scripts/install.sh`. It creates the venv and runs the tests, installs the git hooks, links the `jobhunter` command, and starts Docker.
 
+### Server watchdog (cron)
+`scripts/watchdog.sh` runs every 10 min from the user's crontab (`jobhunter watchdog install`, also done by `install.sh`). It covers the case the bot can't report itself: the container stopped, crashed or is unhealthy, or the heartbeat is older than 5 min.
+* It runs `docker compose up -d` and sends **one** Telegram alert to `ADMIN_IDS`, or to the admins in the DB, using curl with `--form-string`.
+* When things recover, it sends one ✅ message. The open alert is remembered in `data/watchdog.alerted`.
+
 ### `jobhunter` command (like `wnc`)
 `~/.local/bin/jobhunter → <repo>/scripts/jobhunter`, works from any directory and over SSH:
 
@@ -267,6 +281,7 @@ jobhunter users | approve <id> | block <id> | make-admin <id> | stats | reset-co
 jobhunter start | stop | restart
 jobhunter rebuild           rebuild (tests run) + restart     ← after you change code
 jobhunter update            git pull + rebuild                ← after pushing from another machine
+jobhunter watchdog install  cron check every 10 min (restart + Telegram alert)
 jobhunter clean             free space: logs older than 12 h, old images, build cache
 jobhunter test | env | backup | shell
 ```
@@ -287,6 +302,7 @@ jobhunter test | env | backup | shell
 | `test_scanner.py` | full cycles, shared searches, single detail fetch, paging, back-fill, duplicates, pause, rate-limit cooldown & recovery, re-evaluation |
 | `test_referral.py` | every message is job-specific, the note stays ≤ 200 chars even with huge titles, no-resume fallback, name parsing, people-search links, handler + isolation |
 | (locations) | `test_skills_filters.py::test_normalize_location`: Delhi NCR → New Delhi string, aliases, pass-through |
+| `test_health.py` | health verdicts, `/alive` (healthy / down / slow / cooldown / blockers / restart), cycles table + pruning, user_window, in-bot watchdog (alert once, recover), daily report + toggle, **watchdog.sh run against fake docker/curl** (restart, single alert, recovery, frozen bot, admins from DB) |
 | `test_bot.py` | approval flow, admin-only, resume upload, filter buttons & text, job buttons, user isolation, delivery cap/quiet/pause/blocked, Clear chat, /deleteme, manual scan cooldown |
 
 **The tests run automatically:**

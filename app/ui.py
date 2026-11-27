@@ -17,10 +17,12 @@ e = html.escape
 BTN_SCAN, BTN_FILTERS, BTN_RESUME, BTN_STATUS = "🔍 Find jobs now", "⚙️ Filters", "📄 My resume", "📊 Status"
 BTN_SAVED, BTN_INSIGHTS, BTN_PAUSE, BTN_CLEAR, BTN_HELP = ("⭐ Saved", "💡 Insights", "⏯ Pause / Resume",
                                                            "🧹 Clear chat", "❓ Help")
-MENU_BUTTONS = [BTN_SCAN, BTN_FILTERS, BTN_RESUME, BTN_STATUS, BTN_SAVED, BTN_INSIGHTS, BTN_PAUSE, BTN_CLEAR,
-                BTN_HELP]
+BTN_ALIVE = "🟢 Is it working?"
+MENU_BUTTONS = [BTN_ALIVE, BTN_SCAN, BTN_FILTERS, BTN_RESUME, BTN_STATUS, BTN_SAVED, BTN_INSIGHTS, BTN_PAUSE,
+                BTN_CLEAR, BTN_HELP]
 MAIN_KB = ReplyKeyboardMarkup(
-    [[BTN_SCAN, BTN_FILTERS], [BTN_RESUME, BTN_STATUS], [BTN_SAVED, BTN_INSIGHTS], [BTN_PAUSE, BTN_CLEAR, BTN_HELP]],
+    [[BTN_ALIVE], [BTN_SCAN, BTN_FILTERS], [BTN_RESUME, BTN_STATUS], [BTN_SAVED, BTN_INSIGHTS],
+     [BTN_PAUSE, BTN_CLEAR, BTN_HELP]],
     resize_keyboard=True, is_persistent=True)
 
 HELP = """<b>🎯 Job Hunter</b>
@@ -44,6 +46,7 @@ I watch LinkedIn for new jobs that fit <b>your</b> resume and send them the mome
 /years 2.5 – set your experience
 /resume – your resume · /saved – saved & applied
 /insights – skills you're missing most
+/alive – 🟢 is it working? (is the bot hunting for me right now)
 /status – stats · /pause – pause or resume alerts
 /clear – clear this chat · /deleteme – delete all your data
 /intro – 📖 guided tour of every feature"""
@@ -108,6 +111,7 @@ INTRO_PAGES: list[tuple[str, str]] = [
      "message, follow-up) + links to find people at the company\n\n"
      "The same role posted in several cities is sent only once."),
     ("🧭 The menu buttons",
+     "🟢 <b>Is it working?</b>: proof I'm hunting for you right now: last scan, next scan, today's numbers\n"
      "🔍 <b>Find jobs now</b>: search right away (otherwise automatic every few minutes)\n"
      "⚙️ <b>Filters</b>: everything you can tune\n"
      "📄 <b>My resume</b>: what I read from it, suggested keywords\n"
@@ -116,6 +120,7 @@ INTRO_PAGES: list[tuple[str, str]] = [
      "💡 <b>Insights</b>: skills jobs want that you don't have yet (what to learn next)\n"
      "⏯ <b>Pause / Resume</b>: stop or restart alerts\n"
      "🧹 <b>Clear chat</b>: tidy this chat (optionally keep job alerts)\n"
+     "🌅 Every morning at 9:00 you get a <b>daily report</b> of the last 24 h (turn it off in Filters)\n"
      "❓ <b>Help</b>: commands list · /intro: this tour"),
     ("🔒 Privacy & tips",
      "• Your resume is stored only on this bot's server, in a folder that belongs to your Telegram ID. "
@@ -243,7 +248,8 @@ def filters_kb(f: Filters) -> InlineKeyboardMarkup:
         [B("🎯 Match threshold", callback_data="f:thr"), B("🧮 Max years asked", callback_data="f:maxy")],
         [B("👤 My experience", callback_data="f:myy"), B("👥 Max applicants", callback_data="f:apps")],
         [B("🚫 Skip title words", callback_data="f:excl"), B("🏢 Skip companies", callback_data="f:comp")],
-        [B("🌙 Quiet hours", callback_data="f:quiet")],
+        [B("🌙 Quiet hours", callback_data="f:quiet"),
+         B(f"🌅 Daily report: {'ON' if f.daily_report else 'off'}", callback_data="f:daily")],
         [B("♻️ Reset", callback_data="f:reset"), B("✅ Done", callback_data="f:done")],
     ])
 
@@ -359,6 +365,91 @@ CLEAR_KB = InlineKeyboardMarkup([
     [B("🧹 Clear, but keep job alerts", callback_data="c:keepjobs")],
     [B("✖️ Cancel", callback_data="c:cancel")],
 ])
+
+
+# ---------- "is it working?" ----------
+
+def _ago(minutes: float | None) -> str:
+    if minutes is None:
+        return "never"
+    if minutes < 1:
+        return "just now"
+    if minutes < 90:
+        return f"{round(minutes)} min ago"
+    return f"{minutes / 60:.1f} h ago"
+
+
+def health_verdict(last_age_min: float | None, last_error: str, cooldown: str, interval: float,
+                   uptime_min: float) -> str:
+    """ok | starting | slow | down — from how long ago the last scan cycle ran and how it went."""
+    if cooldown:
+        return "slow"
+    if last_age_min is None:
+        return "starting" if uptime_min <= 2 * interval + 1 else "down"
+    if last_age_min > 3 * interval + 1:
+        return "down"
+    return "slow" if last_error else "ok"
+
+
+VERDICTS = {
+    "ok": "🟢 <b>Yes — I'm hunting for you right now.</b>",
+    "starting": "🟢 <b>Just restarted</b> — the first scan starts in a moment.",
+    "slow": "🟡 <b>Working, but slowed down.</b>",
+    "down": "🔴 <b>Something's wrong — scans have stopped.</b> The admin has been alerted.",
+}
+
+
+def alive_text(s: dict) -> tuple[str, InlineKeyboardMarkup | None]:
+    """s: verdict, last (dict|None), last_age, next_in, cooldown, error, interval, today, uptime_h, paused,
+    keywords, locations, posted, easy_apply, has_resume."""
+    lines = [VERDICTS[s["verdict"]]]
+    kb_rows = []
+    if s["verdict"] == "slow":
+        lines.append(f"LinkedIn asked me to slow down — back at full speed at {e(s['cooldown'])} UTC."
+                     if s["cooldown"] else f"Last scan had a problem: {e(s['error'])}. Retrying automatically.")
+    if s["paused"]:
+        lines.append("\n⏸ <b>But your alerts are paused</b> — I'm not searching for you.")
+        kb_rows.append([B("▶️ Resume my alerts", callback_data="alive:resume")])
+    if not s["keywords"]:
+        lines.append("\n⚠️ <b>You have no job titles set</b> — I have nothing to search for.")
+        kb_rows.append([B("🔎 Add job titles", callback_data="f:kw")])
+    if not s["has_resume"]:
+        lines.append("📄 No resume yet: jobs come without a match %. Send it as a file.")
+    last = s["last"]
+    lines.append("")
+    if last:
+        lines.append(f"🔁 Last scan: <b>{_ago(s['last_age'])}</b> — {last['searches']} searches, "
+                     f"{last['listings']} listings, {last['new_jobs']} new")
+    else:
+        lines.append("🔁 Last scan: not yet since restart")
+    if s["next_in"] is not None:
+        lines.append(f"⏭ Next scan: in {max(0, round(s['next_in']))} min (every {s['interval']:g} min, day and night)")
+    t = s["today"]
+    lines.append(f"📅 Today for you: checked <b>{t['checked']}</b> new jobs · matched {t['matched']} · "
+                 f"sent {t['sent']}" + (f" · best {t['best']}%" if t.get("best") is not None else ""))
+    if s["keywords"]:
+        lines.append(f"🔎 Searching: {e(', '.join(s['keywords']))}")
+        lines.append(f"📍 {e(', '.join(s['locations']))} · 🕒 {e(s['posted'])}"
+                     + (" · ⚡ Easy Apply only" if s["easy_apply"] else ""))
+    lines.append(f"🖥 Bot running for {s['uptime_h']}")
+    if s["verdict"] == "ok" and not t["sent"]:
+        lines.append("\n<i>No jobs yet today? That's normal: I only send fresh jobs that match your filters. "
+                     "Widen 🕒 Date posted or turn off ⚡ Easy Apply in ⚙️ Filters for more.</i>")
+    return "\n".join(lines), (InlineKeyboardMarkup(kb_rows) if kb_rows else None)
+
+
+def daily_report_text(name: str, w: dict, cycles: dict, interval: float) -> str:
+    ran = "✅ scans ran all day" if cycles["cycles"] >= (24 * 60 / interval) * 0.8 else \
+        f"⚠️ only {cycles['cycles']} scans ran (expected ~{int(24 * 60 / interval)})"
+    lines = [f"☀️ <b>Good morning{', ' + e(name) if name else ''}!</b> Your last 24 hours:",
+             f"🔎 Checked <b>{w['checked']}</b> new jobs for you",
+             f"🎯 Matched <b>{w['matched']}</b>" + (f" · best match {w['best']}%" if w.get("best") is not None else ""),
+             f"📬 Sent you <b>{w['sent']}</b>",
+             f"🖥 {ran} ({cycles['listings']} LinkedIn listings looked at)"]
+    if not w["sent"]:
+        lines.append("\n<i>Quiet day? Add job titles or widen 🕒 Date posted in ⚙️ Filters.</i>")
+    lines.append("\n<i>Turn this report off in ⚙️ Filters → 🌅 Daily report.</i>")
+    return "\n".join(lines)
 
 
 # ---------- insights ----------

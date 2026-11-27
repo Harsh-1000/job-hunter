@@ -29,4 +29,6 @@ systemctl is-enabled docker >/dev/null 2>&1 || sudo systemctl enable docker
 export UID; export GID="$(id -g)"
 docker compose up -d --build
 docker compose ps
+say "Server watchdog (cron, every 10 min)"
+"$DIR/scripts/jobhunter" watchdog install
 echo -e "\nDone. Try: jobhunter health"

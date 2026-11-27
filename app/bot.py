@@ -6,7 +6,7 @@ import html
 import json
 import logging
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, time as dtime, timedelta, timezone
 from functools import wraps
 from zoneinfo import ZoneInfo
 
@@ -402,6 +402,11 @@ async def on_filter_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE, user)
         return await q.edit_message_text(
             "<b>🧮 Max years a job may ask for</b>\nAuto = your experience + 2.", parse_mode=ParseMode.HTML,
             reply_markup=ui.maxyears_kb(f.max_years))
+    if key == "daily":
+        f.daily_report = not f.daily_report
+        save_filters(uid, f)
+        await q.answer(f"Daily report: {'ON' if f.daily_report else 'off'}")
+        return await _show_menu(q, f, p)
     if key == "ea":
         f.easy_apply = not f.easy_apply
         save_filters(uid, f)
@@ -664,6 +669,7 @@ async def run_cycle(app: Application, only_user: int | None = None):
         if only_user is None:
             db.set_meta("last_cycle_at", datetime.now(ZoneInfo(settings.timezone)).strftime("%d %b %H:%M"))
             db.set_meta("last_cycle", res.summary())
+            db.record_cycle(res)
     await deliver_all(app)
     return res
 
@@ -739,6 +745,142 @@ async def deliver_job(ctx: ContextTypes.DEFAULT_TYPE) -> None:
         await deliver_all(ctx.application)
 
 
+# =============== "is it working?", watchdog, daily report ===============
+
+def _minutes_since(ts: str | None) -> float | None:
+    if not ts:
+        return None
+    t = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+    return (db.now() - t).total_seconds() / 60
+
+
+def _uptime_min(app) -> float:
+    return (time.time() - app.bot_data.setdefault("started_at", time.time())) / 60
+
+
+def _fmt_uptime(minutes: float) -> str:
+    if minutes < 60:
+        return f"{int(minutes)} min"
+    if minutes < 48 * 60:
+        return f"{minutes / 60:.1f} h"
+    return f"{minutes / 1440:.1f} days"
+
+
+def local_midnight_utc() -> datetime:
+    tz = ZoneInfo(settings.timezone)
+    return datetime.now(tz).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
+
+
+def health_state(app) -> dict:
+    last = db.last_cycle()
+    age = _minutes_since(last["ts"]) if last else None
+    cooldown = in_cooldown()
+    verdict = ui.health_verdict(age, last["error"] if last else "", cooldown, settings.scan_every_minutes,
+                                _uptime_min(app))
+    return {"verdict": verdict, "last": dict(last) if last else None, "last_age": age, "cooldown": cooldown,
+            "error": last["error"] if last else ""}
+
+
+@active_only
+async def cmd_alive(update: Update, ctx: ContextTypes.DEFAULT_TYPE, user) -> None:
+    if update.callback_query:
+        await update.callback_query.answer()
+    app = ctx.application
+    f, p = load(user["id"])
+    h = health_state(app)
+    nxt = next(iter(app.job_queue.get_jobs_by_name(SCAN_JOB)), None)
+    next_in = ((nxt.next_t - datetime.now(timezone.utc)).total_seconds() / 60) if nxt and nxt.next_t else None
+    text, kb = ui.alive_text({
+        **h, "next_in": next_in, "interval": settings.scan_every_minutes,
+        "today": db.user_window(user["id"], local_midnight_utc()), "uptime_h": _fmt_uptime(_uptime_min(app)),
+        "paused": bool(user["paused"]), "keywords": f.keywords,
+        "locations": [location_label(x) for x in f.locations], "posted": POSTED.get(f.posted, f.posted),
+        "easy_apply": f.easy_apply, "has_resume": p is not None,
+    })
+    await reply(update, ctx, text, reply_markup=kb)
+
+
+@active_only
+async def on_alive_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE, user) -> None:
+    q = update.callback_query
+    if q.data == "alive:resume":
+        db.update_user(user["id"], paused=0)
+        await q.answer("Alerts resumed ▶️")
+        await q.edit_message_text("▶️ <b>Alerts resumed</b> — I'm hunting for you again.", parse_mode=ParseMode.HTML)
+    else:
+        await q.answer()
+
+
+def watchdog_problem(app) -> str:
+    """'' when healthy, else a short description of what's wrong."""
+    h = health_state(app)
+    if h["cooldown"]:
+        return f"LinkedIn rate-limited the scanner; paused until {h['cooldown']} UTC"
+    limit = max(15.0, 4 * settings.scan_every_minutes)
+    if h["last_age"] is None:
+        return "" if _uptime_min(app) <= limit else f"no scan has run since the bot started {_uptime_min(app):.0f} min ago"
+    if h["last_age"] > limit:
+        return f"no scan for {h['last_age']:.0f} min (last error: {h['error'] or 'none'})"
+    recent = [c for c in _recent_cycles(3)]
+    if len(recent) == 3 and all(c["error"] for c in recent):
+        return f"the last 3 scans failed: {recent[0]['error']}"
+    return ""
+
+
+def _recent_cycles(n: int):
+    with db.conn() as c:
+        return c.execute("SELECT * FROM cycles ORDER BY ts DESC LIMIT ?", (n,)).fetchall()
+
+
+async def watchdog_job(ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    await run_watchdog(ctx.application)
+
+
+async def run_watchdog(app) -> str:
+    problem = watchdog_problem(app)
+    was_open = db.get_meta("alert_open") == "1"
+    if problem and not was_open:
+        msg = f"🔴 <b>Job Hunter problem</b>\n{e(problem)}\n\nI'll keep retrying and tell you when it's fixed."
+        db.set_meta("alert_open", "1")
+    elif not problem and was_open:
+        msg = "✅ <b>Job Hunter is back to normal</b> — scanning again."
+        db.set_meta("alert_open", "0")
+    else:
+        return ""
+    log.warning("watchdog: %s", problem or "recovered")
+    for a in db.admins():
+        try:
+            await send(app.bot, a["chat_id"], msg)
+        except TelegramError as err:
+            log.warning("watchdog notify failed: %s", err)
+    return msg
+
+
+async def daily_report_job(ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    await send_daily_reports(ctx.application)
+
+
+async def send_daily_reports(app) -> int:
+    cycles = db.cycles_since(24)
+    start = db.now() - timedelta(hours=24)
+    sent = 0
+    for u in db.users("active"):
+        f, _ = user_context(u)
+        if u["paused"] or not f.daily_report:
+            continue
+        text = ui.daily_report_text(u["first_name"] or "", db.user_window(u["id"], start), cycles,
+                                    settings.scan_every_minutes)
+        try:
+            await send(app.bot, u["chat_id"], text)
+            sent += 1
+        except Forbidden:
+            db.update_user(u["id"], paused=1)
+        except TelegramError as err:
+            log.warning("daily report to %s failed: %s", u["id"], err)
+        await asyncio.sleep(0.3)
+    return sent
+
+
 async def heartbeat(ctx: ContextTypes.DEFAULT_TYPE) -> None:
     HEARTBEAT.parent.mkdir(parents=True, exist_ok=True)
     HEARTBEAT.touch()
@@ -789,6 +931,7 @@ async def on_error(update: object, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 # =============== wiring ===============
 
 COMMANDS = [
+    ("alive", "🟢 Is it working? Am I being hunted for?"),
     ("scan", "🔍 Search LinkedIn now"), ("filters", "⚙️ All filters"), ("resume", "📄 Your resume"),
     ("titles", "🔎 Add / remove job titles"), ("addtitle", "➕ Add job titles"), ("location", "📍 Set locations"), ("threshold", "🎯 Min match %"),
     ("years", "👤 Your years of experience"), ("saved", "⭐ Saved & applied jobs"),
@@ -814,6 +957,9 @@ async def post_init(app: Application) -> None:
     jq.run_repeating(heartbeat, interval=30, first=0, name="heartbeat")
     jq.run_repeating(prune_job, interval=timedelta(hours=6), first=600, name="prune")
     jq.run_repeating(log_cleanup_job, interval=timedelta(hours=1), first=60, name="log-cleanup")
+    jq.run_repeating(watchdog_job, interval=timedelta(minutes=5), first=300, name="watchdog")
+    jq.run_daily(daily_report_job, time=dtime(9, 0, tzinfo=ZoneInfo(settings.timezone)), name="daily-report")
+    app.bot_data["started_at"] = time.time()
     log.info("Job Hunter started: scanning every %s min", settings.scan_every_minutes)
 
 
@@ -823,6 +969,7 @@ def build() -> Application:
     app.add_handler(TypeHandler(Update, track_incoming), group=-1)
     app.add_handler(CommandHandler("start", cmd_start, filters=private))
     app.add_handler(CommandHandler("help", cmd_help, filters=private))
+    app.add_handler(CommandHandler(["alive", "working", "check"], cmd_alive, filters=private))
     app.add_handler(CommandHandler(["intro", "tour", "guide"], cmd_intro, filters=private))
     app.add_handler(CommandHandler("scan", cmd_scan, filters=private, block=False))
     app.add_handler(CommandHandler("filters", cmd_filters, filters=private))
@@ -847,7 +994,7 @@ def build() -> Application:
 
     buttons = {ui.BTN_SCAN: cmd_scan, ui.BTN_FILTERS: cmd_filters, ui.BTN_RESUME: cmd_resume,
                ui.BTN_STATUS: cmd_status, ui.BTN_SAVED: cmd_saved, ui.BTN_INSIGHTS: cmd_insights,
-               ui.BTN_PAUSE: cmd_pause, ui.BTN_CLEAR: cmd_clear, ui.BTN_HELP: cmd_help}
+               ui.BTN_PAUSE: cmd_pause, ui.BTN_CLEAR: cmd_clear, ui.BTN_HELP: cmd_help, ui.BTN_ALIVE: cmd_alive}
     for label, fn in buttons.items():
         app.add_handler(MessageHandler(private & filters.Text([label]), fn, block=label != ui.BTN_SCAN))
 
@@ -860,6 +1007,7 @@ def build() -> Application:
     app.add_handler(CallbackQueryHandler(on_clear_button, pattern=r"^c:"))
     app.add_handler(CallbackQueryHandler(on_admin_button, pattern=r"^a:"))
     app.add_handler(CallbackQueryHandler(on_intro_button, pattern=r"^i:"))
+    app.add_handler(CallbackQueryHandler(on_alive_button, pattern=r"^alive:"))
     app.add_handler(CallbackQueryHandler(cmd_scan, pattern=r"^s:scan$", block=False))
     app.add_handler(CallbackQueryHandler(ack_unknown))
     app.add_error_handler(on_error)

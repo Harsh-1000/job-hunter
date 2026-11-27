@@ -68,6 +68,17 @@ case "$CMD" in
         (umask 077; tar -czf "$out" .env data/jobhunter.db data/users 2>/dev/null)
         echo "Backup: $out  (contains the bot token and users' resumes: keep it private)" ;;
     shell)   docker compose exec job-hunter bash ;;
+    watchdog)
+        line="*/10 * * * * $BOT_DIR/scripts/watchdog.sh >/dev/null 2>&1 # job-hunter-watchdog"
+        case "${1:-status}" in
+            install) (crontab -l 2>/dev/null | grep -v job-hunter-watchdog; echo "$line") | crontab -
+                     echo "Watchdog installed: checks every 10 min, restarts the bot and messages you on Telegram." ;;
+            remove)  (crontab -l 2>/dev/null | grep -v job-hunter-watchdog) | crontab -; echo "Watchdog removed." ;;
+            run)     "$BOT_DIR/scripts/watchdog.sh" ;;
+            *)       crontab -l 2>/dev/null | grep -q job-hunter-watchdog && echo "Watchdog: installed (every 10 min)" \
+                         || echo "Watchdog: not installed (jobhunter watchdog install)"
+                     [[ -f data/watchdog.alerted ]] && echo "Open alert since $(cat data/watchdog.alerted)" ;;
+        esac ;;
 
     help|-h|--help|*)
         [[ "$CMD" =~ ^(help|-h|--help)$ ]] || echo "Unknown command: $CMD"
@@ -95,6 +106,8 @@ Job Hunter bot — helper commands (run from anywhere, also over SSH)
    jobhunter test              run the test suite
    jobhunter env               edit .env, then restart
    jobhunter backup            save .env + database + resumes to ~/jobhunter-backup-<date>.tar.gz
+   jobhunter watchdog install  check every 10 min from cron: restart + Telegram alert if the bot is down
+   jobhunter watchdog [status|run|remove]
 TXT
         ;;
 esac

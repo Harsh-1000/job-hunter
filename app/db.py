@@ -7,6 +7,7 @@ query_state when each search last ran
 user_queries which searches each user has been attached to (to backfill a search others already ran)
 deliveries  one row per (user, job): waiting -> pending -> sent -> applied/saved/hidden, or rejected
 messages    message IDs in each chat, so "Clear chat" can delete them
+cycles      one row per scheduled scan cycle (for "Is it working?", the watchdog and the daily report)
 """
 from __future__ import annotations
 
@@ -59,6 +60,10 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 CREATE TABLE IF NOT EXISTS user_queries (user_id INTEGER NOT NULL, qkey TEXT NOT NULL, PRIMARY KEY (user_id, qkey));
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS cycles (
+    ts TEXT NOT NULL, searches INTEGER, listings INTEGER, new_jobs INTEGER, matched INTEGER, error TEXT
+);
+CREATE INDEX IF NOT EXISTS cycles_ts ON cycles(ts);
 """
 
 SHOWN = ("sent", "applied", "saved", "hidden")
@@ -354,6 +359,46 @@ def prune(job_days: int = 30, seen_days: int = 35) -> None:
         c.execute("DELETE FROM jobs WHERE first_seen < ? AND id NOT IN (SELECT job_id FROM deliveries)", (cut,))
         c.execute("DELETE FROM query_seen WHERE seen_at < ?", (iso(now() - timedelta(days=seen_days)),))
         c.execute("DELETE FROM messages WHERE ts < ?", (iso(now() - timedelta(days=3)),))
+        c.execute("DELETE FROM cycles WHERE ts < ?", (iso(now() - timedelta(days=2)),))
+
+
+# ---------------- scan cycles (health) ----------------
+
+def record_cycle(res) -> None:
+    with conn() as c:
+        c.execute("INSERT INTO cycles (ts, searches, listings, new_jobs, matched, error) VALUES (?,?,?,?,?,?)",
+                  (iso(), res.searches, res.listings, res.new_jobs, res.matched, res.error or ""))
+
+
+def last_cycle(ok_only: bool = False) -> sqlite3.Row | None:
+    """Latest cycle; ok_only = latest one that actually searched LinkedIn without an error."""
+    q = "SELECT * FROM cycles"
+    if ok_only:
+        q += " WHERE searches > 0 AND (error IS NULL OR error = '')"
+    with conn() as c:
+        return c.execute(q + " ORDER BY ts DESC LIMIT 1").fetchone()
+
+
+def cycles_since(hours: float) -> dict[str, int]:
+    with conn() as c:
+        r = c.execute("""SELECT COUNT(*) n, COALESCE(SUM(listings),0) listings, COALESCE(SUM(new_jobs),0) new_jobs,
+                                SUM(CASE WHEN error <> '' AND searches > 0 THEN 1 ELSE 0 END) errors
+                         FROM cycles WHERE ts >= ?""", (iso(now() - timedelta(hours=hours)),)).fetchone()
+    return {"cycles": r["n"], "listings": r["listings"], "new_jobs": r["new_jobs"], "errors": r["errors"] or 0}
+
+
+def user_window(user_id: int, start: datetime, end: datetime | None = None) -> dict:
+    """What happened for one user between start and end (UTC): checked, matched, sent, best score."""
+    a, b = iso(start), iso(end or now())
+    with conn() as c:
+        checked = c.execute("SELECT COUNT(*) FROM deliveries WHERE user_id=? AND created_at >= ? AND created_at <= ?",
+                            (user_id, a, b)).fetchone()[0]
+        matched = c.execute(
+            """SELECT COUNT(*), MAX(score) FROM deliveries WHERE user_id=? AND created_at >= ? AND created_at <= ?
+               AND status IN ('pending','sent','applied','saved','hidden')""", (user_id, a, b)).fetchone()
+        sent = c.execute("SELECT COUNT(*) FROM deliveries WHERE user_id=? AND sent_at >= ? AND sent_at <= ?",
+                         (user_id, a, b)).fetchone()[0]
+    return {"checked": checked, "matched": matched[0], "best": matched[1], "sent": sent}
 
 
 # ---------------- chat messages (for Clear chat) ----------------

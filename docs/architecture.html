@@ -275,6 +275,10 @@ footer { margin-top: 64px; color: var(--muted); font-size: 13.5px; border-top: 1
       <p class="muted">Multi-stage build: <b>base → test (pytest) → runtime</b>. If a test fails, no image is built. <code>restart: unless-stopped</code> plus Docker enabled at boot means the bot starts on boot and after crashes. The healthcheck watches <code>data/heartbeat</code>.</p>
     </div>
     <div class="card">
+      <h3>🟢 Is it working?</h3>
+      <p class="muted"><code>/alive</code> (top menu button) shows a verdict from the last scan: 🟢 hunting, 🟡 slowed, or 🔴 stopped. It also shows the last and next scan, today's checked/matched/sent and what's being searched. Admins get one alert if scans stop, the cron watchdog restarts the container if it dies, and there's a 9:00 daily report.</p>
+    </div>
+    <div class="card">
       <h3>Disk stays small</h3>
       <p class="muted">Log files rotate <b>hourly</b> and are deleted after <b>12 h</b>. Docker logs are capped at ~2 MB. Rebuilds remove old images and build cache. The database prunes itself every 6 h.</p>
     </div>
