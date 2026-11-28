@@ -65,6 +65,12 @@
              margin-bottom: 12px; font-size: 14px; }
   .count { float: right; font-size: 11px; }
   .opt { font-size: 11px; }
+  .edu { border: 1px solid var(--line); border-radius: 10px; padding: 10px 10px 2px; margin-bottom: 10px; position: relative; }
+  .edu-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; font-weight: 600; font-size: 13px; }
+  .edu-del { font: inherit; font-size: 13px; border: 0; background: transparent; color: var(--danger); cursor: pointer; padding: 4px 6px; }
+  .add { width: 100%; padding: 10px; font: inherit; font-size: 14px; border: 1px dashed var(--accent); border-radius: 10px;
+         background: transparent; color: var(--accent); cursor: pointer; margin-bottom: 12px; }
+  .add:disabled { opacity: .4; cursor: default; }
   .signin { font-size: 12px; margin-top: 4px; }
   .signin.ok { color: #1e8e3e; }
   .signin code { font-size: 12px; background: var(--bg2); padding: 1px 5px; border-radius: 5px; }
@@ -73,6 +79,7 @@
 <body>
 <main>
   <h1>📝 Application form</h1>
+  <p class="sub" id="account" style="display:none"></p>
   <p class="sub">Fill this once. Claude uses it to write your answers and, only on the sites you switch on, to fill job forms for you.</p>
   <div id="outside">Open this page from the Job Hunter bot (📝 Application form) so it can save your answers.</div>
 
@@ -129,16 +136,10 @@
 
   <section>
     <h2>Education</h2>
-    <label>Degree<input name="degree" maxlength="80" placeholder="B.Tech Computer Science"></label>
-    <label>College / university<input name="college" maxlength="120"></label>
-    <div class="row">
-      <label>Graduation year<input name="grad_year" type="number" min="1970" max="2035" inputmode="numeric"></label>
-      <label>CGPA / %<input name="cgpa" maxlength="12" placeholder="8.2/10"></label>
-    </div>
-    <div class="row">
-      <label>Class XII marks<input name="twelfth" maxlength="12" placeholder="88%"></label>
-      <label>Class X marks<input name="tenth" maxlength="12" placeholder="92%"></label>
-    </div>
+    <p class="note" style="margin-top:-4px">Newest first: degrees, diploma, Class XII, Class X. Up to 6.</p>
+    <div id="edu"></div>
+    <button type="button" id="edu-add" class="add">+ Add education</button>
+    <h2 style="margin-top:14px">Other</h2>
     <label>Gender (only if a form requires it)
       <select name="gender"><option value="">Prefer not to say</option><option>Male</option><option>Female</option><option>Non-binary</option></select></label>
     <label>Disability <span class="opt">(only if a form asks)</span>
@@ -195,6 +196,14 @@
     ["ashby", "Ashby (company sites)", "public", "Public company application forms, no account needed."]
   ];
   var MODES = [["off", "Off"], ["ask", "Ask me"], ["auto", "Auto"]];
+  // keep in sync with app/apply_profile.py EDU_LEVELS / MAX_EDUCATION (a test checks)
+  var EDU_LEVELS = [["bachelors", "Bachelor's"], ["masters", "Master's"], ["phd", "PhD"], ["diploma", "Diploma"],
+                    ["class12", "Class XII"], ["class10", "Class X"], ["other", "Other"]];
+  var MAX_EDUCATION = 6;
+  var EDU_FIELDS = [["degree", "Degree / stream", 80, "B.Tech Computer Science"],
+                    ["college", "College / university / board", 120, ""],
+                    ["start_year", "Start year", 4, ""], ["end_year", "End year (or expected)", 4, ""],
+                    ["score", "CGPA / %", 12, "8.2/10"]];
   var MAX_BYTES = 4096;
   var tg = window.Telegram && window.Telegram.WebApp;
   // Opened from a keyboard button, initData is empty by design; platform tells us we're inside Telegram.
@@ -259,9 +268,54 @@
     });
   }
 
+  var eduBox = document.getElementById("edu"), eduAdd = document.getElementById("edu-add");
+  function eduNumber() {
+    var rows = eduBox.querySelectorAll(".edu");
+    rows.forEach(function (r, i) { r.querySelector(".edu-title").textContent = "Education " + (i + 1); });
+    eduAdd.disabled = rows.length >= MAX_EDUCATION;
+  }
+  function addEdu(v) {
+    if (eduBox.querySelectorAll(".edu").length >= MAX_EDUCATION) return;
+    v = v || {};
+    var box = document.createElement("div"); box.className = "edu";
+    var head = document.createElement("div"); head.className = "edu-head";
+    var t = document.createElement("span"); t.className = "edu-title"; head.appendChild(t);
+    var del = document.createElement("button"); del.type = "button"; del.className = "edu-del"; del.textContent = "✕ Remove";
+    del.addEventListener("click", function () { box.remove(); eduNumber(); });
+    head.appendChild(del); box.appendChild(head);
+    var lv = document.createElement("label"); lv.textContent = "Level";
+    var sel = document.createElement("select"); sel.setAttribute("data-k", "level");
+    EDU_LEVELS.forEach(function (l) { var o = document.createElement("option"); o.value = l[0]; o.textContent = l[1]; sel.appendChild(o); });
+    sel.value = v.level || "bachelors"; lv.appendChild(sel); box.appendChild(lv);
+    var row;
+    EDU_FIELDS.forEach(function (f, i) {
+      var lab = document.createElement("label"); lab.textContent = f[1];
+      var inp = document.createElement("input"); inp.setAttribute("data-k", f[0]); inp.maxLength = f[2];
+      if (f[3]) inp.placeholder = f[3];
+      if (/year/.test(f[0])) { inp.type = "number"; inp.min = 1960; inp.max = 2035; inp.inputMode = "numeric"; }
+      if (v[f[0]] !== undefined && v[f[0]] !== null) inp.value = String(v[f[0]]);
+      lab.appendChild(inp);
+      if (i >= 2) {   // years and score side by side
+        if (!row || row.children.length === 2) { row = document.createElement("div"); row.className = "row"; box.appendChild(row); }
+        row.appendChild(lab);
+      } else box.appendChild(lab);
+    });
+    eduBox.appendChild(box); eduNumber();
+  }
+  function collectEdu() {
+    var out = [];
+    eduBox.querySelectorAll(".edu").forEach(function (b) {
+      var e = {};
+      b.querySelectorAll("[data-k]").forEach(function (el) { e[el.getAttribute("data-k")] = el.value.trim(); });
+      if (e.degree || e.college || e.end_year || e.score) out.push(e);
+    });
+    return out;
+  }
+  eduAdd.addEventListener("click", function () { addEdu(); });
+
   function fill(d) {
     Array.prototype.forEach.call(form.elements, function (el) {
-      if (!el.name || !(el.name in d) || d[el.name] === null || el.type === "button") return;
+      if (!el.name || !(el.name in d) || d[el.name] === null || el.type === "button" || typeof d[el.name] === "object") return;
       if (el.type === "checkbox") el.checked = d[el.name] === true;
       else el.value = String(d[el.name]);
     });
@@ -274,6 +328,7 @@
       out[el.name] = el.type === "checkbox" ? el.checked : el.value.trim();
     });
     out.sites = modes;
+    out.education = collectEdu();
     return out;
   }
 
@@ -312,6 +367,12 @@
   var data = decodeHash();
   renderSites(data.sites, data.signed_in);
   fill(data);
+  (Array.isArray(data.education) && data.education.length ? data.education : [{}]).forEach(addEdu);
+  if (data.account && data.account.id) {   // shown only; the bot saves to whoever Telegram says sent the form
+    var acc = document.getElementById("account");
+    acc.textContent = "Saving to your bot account: " + (data.account.name || "you") + " · Telegram ID " + data.account.id;
+    acc.style.display = "block";
+  }
   document.getElementById("save").addEventListener("click", save);
   if (tg) {
     tg.ready(); tg.expand();
