@@ -260,9 +260,13 @@ hard filters, the way a recruiter would, including the keyword "near misses" the
   * consent is required for any site that isn't Off.
 * Fields: contact (name, email, phone, city, PIN code, date of birth), links, work (company, title, total and
   relevant years, notice, current / expected CTC, relocation, sponsorship, preferred locations, work mode, work
-  authorisation), profile (headline, key skills, summary, languages), education (degree, college, year, CGPA,
-  class XII and X marks), gender and disability (both optional, "prefer not to say"), default answers.
+  authorisation), profile (headline, key skills, summary, languages), **education: a list of up to 6 entries** (`+ Add education` / `✕ Remove`; each has level PhD / Master's /
+  Bachelor's / Diploma / Class XII / Class X / Other, degree, college or board, start and end year, CGPA or %;
+  forms saved before this load into the list via `_old_education`), gender and disability (both optional, "prefer not to say"), default answers.
   `for_claude()` leaves out email, phone, PIN code, date of birth and disability.
+* **Whose form it is:** the form has no Telegram ID field, on purpose. Telegram attaches the sender to every
+  `web_app_data` message, and the bot saves to `update.effective_user.id`, so a page can't save to someone else's
+  account. The page only *shows* "Saving to your bot account: name · Telegram ID" (from the `#d=` data).
 * Stored in `data/users/<id>/apply_profile.json` (0600) and deleted by `/deleteme`.
 * The page loads only Telegram's `telegram-web-app.js`, has no `fetch`, no storage and no backend. A test checks
   that its field names and site list match `apply_profile.py` and `apply_sites.py`.

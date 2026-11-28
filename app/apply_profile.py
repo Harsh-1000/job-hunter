@@ -19,12 +19,15 @@ NOTICE = ("immediate", "15", "30", "60", "90")
 YES_NO = ("yes", "no")
 WORK_MODES = ("any", "remote", "hybrid", "onsite")
 DISABILITY = ("", "no", "yes")
+EDU_LEVELS = {"phd": "PhD", "masters": "Master's", "bachelors": "Bachelor's", "diploma": "Diploma",
+              "class12": "Class XII", "class10": "Class X", "other": "Other"}
+MAX_EDUCATION = 6
 MARKS_RE = re.compile(r"\d{1,3}(\.\d{1,2})?\s*(%|/\s*10|/\s*4)?")
 
 # field -> max length (text fields)
 TEXT = {"full_name": 60, "email": 120, "phone": 20, "city": 60, "linkedin": 150, "github": 150,
         "portfolio": 150, "current_company": 80, "current_title": 80, "preferred_locations": 120,
-        "work_auth": 80, "degree": 80, "college": 120, "gender": 20, "why_default": 400, "cover_note": 600,
+        "work_auth": 80, "gender": 20, "why_default": 400, "cover_note": 600,
         "pincode": 6, "headline": 120, "summary": 400, "key_skills": 200, "languages": 80}
 MULTILINE = ("why_default", "cover_note", "summary")
 URLS = ("linkedin", "github", "portfolio")
@@ -57,12 +60,8 @@ class ApplyProfile:
     preferred_locations: str = ""
     work_auth: str = "Indian citizen"
     sponsorship: str = "no"
-    degree: str = ""
-    college: str = ""
-    grad_year: int | None = None
-    cgpa: str = ""
-    twelfth: str = ""                  # class XII marks, "88%"
-    tenth: str = ""                    # class X marks
+    # [{level, degree, college, start_year, end_year, score}], newest first; "+ Add education" in the form
+    education: list[dict] = field(default_factory=list)
     gender: str = ""
     disability: str = ""               # "" (prefer not to say) | no | yes
     why_default: str = ""
@@ -80,6 +79,8 @@ class ApplyProfile:
             return None
         known = {f.name for f in fields(cls)}
         p = cls(**{k: v for k, v in d.items() if k in known})
+        if not p.education:
+            p.education = _old_education(d)
         p.sites = {**default_modes(), **{k: v for k, v in (p.sites or {}).items() if k in SITES and v in MODES}}
         return p
 
@@ -101,6 +102,57 @@ class ApplyProfile:
         for k in ("email", "phone", "pincode", "dob", "disability", "sites", "daily_cap", "consent"):
             d.pop(k, None)
         return {k: v for k, v in d.items() if v not in ("", None)}
+
+
+def _old_education(d: dict) -> list[dict]:
+    """Forms saved before education became a list: degree / college / grad_year / cgpa / twelfth / tenth."""
+    out = []
+    if d.get("degree") or d.get("college"):
+        out.append({"level": "bachelors", "degree": d.get("degree") or "", "college": d.get("college") or "",
+                    "start_year": None, "end_year": d.get("grad_year"), "score": d.get("cgpa") or ""})
+    for key, level in (("twelfth", "class12"), ("tenth", "class10")):
+        if d.get(key):
+            out.append({"level": level, "degree": "", "college": "", "start_year": None, "end_year": None,
+                        "score": d[key]})
+    return out
+
+
+def _education(items, errors: list[str]) -> list[dict]:
+    if items in (None, ""):
+        return []
+    if not isinstance(items, list):
+        errors.append("education must be a list")
+        return []
+    if len(items) > MAX_EDUCATION:
+        errors.append(f"at most {MAX_EDUCATION} education entries")
+        return []
+    out = []
+    for i, e in enumerate(items, 1):
+        if not isinstance(e, dict):
+            errors.append(f"education {i}: must be an object")
+            continue
+        vals = {k: str(e.get(k) or "").strip() for k in ("level", "degree", "college", "start_year", "end_year",
+                                                          "score")}
+        vals = {k: re.sub(r"[\x00-\x1f\x7f]", " ", v) for k, v in vals.items()}
+        if not any(vals[k] for k in ("degree", "college", "end_year", "score")):
+            continue                                   # an empty row the user added and didn't fill
+        level = vals["level"] or "other"
+        if level not in EDU_LEVELS:
+            errors.append(f"education {i}: unknown level")
+            continue
+        for k, n in (("degree", 80), ("college", 120)):
+            if len(vals[k]) > n:
+                errors.append(f"education {i}: {k} is too long (max {n})")
+        if vals["score"] and not MARKS_RE.fullmatch(vals["score"]):
+            errors.append(f"education {i}: score should look like 8.2, 8.2/10 or 76%")
+        label = f"education {i}"
+        start = _num(vals["start_year"], 1960, 2035, f"{label}: start year", errors, integer=True)
+        end = _num(vals["end_year"], 1960, 2035, f"{label}: end year", errors, integer=True)
+        if start and end and start > end:
+            errors.append(f"{label}: start year is after end year")
+        out.append({"level": level, "degree": vals["degree"][:80], "college": vals["college"][:120],
+                    "start_year": start, "end_year": end, "score": vals["score"][:12]})
+    return out
 
 
 def _num(v, lo: float, hi: float, name: str, errors: list[str], integer: bool = False):
@@ -161,12 +213,7 @@ def from_form(data) -> tuple[ApplyProfile | None, list[str]]:
         errors.append("relevant experience can't be more than total experience")
     p.current_ctc_lpa = _num(data.get("current_ctc_lpa"), 0, 500, "current CTC", errors)
     p.expected_ctc_lpa = _num(data.get("expected_ctc_lpa"), 0, 500, "expected CTC", errors)
-    p.grad_year = _num(data.get("grad_year"), 1970, 2035, "graduation year", errors, integer=True)
-    for k, label in (("cgpa", "CGPA"), ("twelfth", "Class XII marks"), ("tenth", "Class X marks")):
-        v = str(data.get(k, "") or "").strip()
-        if v and not MARKS_RE.fullmatch(v):
-            errors.append(f"{label} should look like 8.2, 8.2/10 or 76%")
-        setattr(p, k, v)
+    p.education = _education(data.get("education"), errors)
     for k, allowed in (("notice", NOTICE), ("relocate", YES_NO), ("sponsorship", YES_NO),
                        ("work_mode", WORK_MODES), ("disability", DISABILITY)):
         v = str(data.get(k, getattr(p, k)) or "").strip().lower()

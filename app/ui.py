@@ -555,6 +555,11 @@ def apply_profile_text(p, login_sites: list[str], signed_in: dict | None = None)
     if p.expected_ctc_lpa is not None:
         lines.append(f"💰 Expected {p.expected_ctc_lpa:g} LPA" + (f" (current {p.current_ctc_lpa:g})"
                                                                  if p.current_ctc_lpa is not None else ""))
+    if p.education:
+        from .apply_profile import EDU_LEVELS
+        lines.append("🎓 " + e(" · ".join(
+            f"{EDU_LEVELS.get(x['level'], '')} {x['degree']}".strip() + (f" ({x['end_year']})" if x.get("end_year") else "")
+            for x in p.education)))
     active = p.active_sites()
     if active:
         lines.append("\n🤖 <b>Auto-apply on:</b>")

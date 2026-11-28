@@ -26,8 +26,9 @@ FORM = {"full_name": "Asha Verma", "email": "asha@example.com", "phone": "+91 98
         "linkedin": "https://www.linkedin.com/in/asha", "github": "", "portfolio": "", "current_company": "Acme",
         "current_title": "Software Engineer", "total_years": "2.8", "notice": "30", "current_ctc_lpa": "12",
         "expected_ctc_lpa": "18.5", "relocate": "yes", "sponsorship": "no", "preferred_locations": "Delhi NCR",
-        "work_auth": "Indian citizen", "degree": "B.Tech CSE", "college": "XYZ", "grad_year": "2023",
-        "cgpa": "8.2/10", "gender": "", "why_default": "I like building\nAI products.", "cover_note": "",
+        "work_auth": "Indian citizen", "gender": "",
+        "education": [{"level": "bachelors", "degree": "B.Tech CSE", "college": "XYZ", "start_year": "2019",
+                       "end_year": "2023", "score": "8.2/10"}, {"level": "class12", "college": "CBSE", "score": "88%"}], "why_default": "I like building\nAI products.", "cover_note": "",
         "daily_cap": "10", "consent": True, "sites": {"greenhouse": "auto", "naukri": "ask"}}
 
 
@@ -48,7 +49,7 @@ def ai_on():
 def test_valid_form():
     p, errs = ap.from_form(FORM)
     assert errs == [] and p.full_name == "Asha Verma" and p.total_years == 2.8 and p.expected_ctc_lpa == 18.5
-    assert p.grad_year == 2023 and p.sites["greenhouse"] == "auto" and p.sites["indeed"] == "off"
+    assert p.education[0]["end_year"] == 2023 and p.education[1]["level"] == "class12" and p.sites["greenhouse"] == "auto" and p.sites["indeed"] == "off"
     assert p.active_sites() == {"greenhouse": "auto", "naukri": "ask"} and p.daily_cap == 10
     assert p.why_default == "I like building\nAI products."     # newlines kept in long answers
     assert p.missing() == []
@@ -60,8 +61,8 @@ def test_valid_form():
     ({"total_years": "abc"}, "number"), ({"notice": "45"}, "notice"), ({"relocate": "maybe"}, "relocate"),
     ({"sites": {"monster": "auto"}}, "unknown site"), ({"sites": {"lever": "always"}}, "mode"),
     ({"consent": False}, "consent"), ({"consent": "yes"}, "consent"), ({"full_name": "x" * 61}, "too long"),
-    ({"city": 5}, "text"), ({"daily_cap": "99"}, "daily limit"), ({"cgpa": "great"}, "CGPA"),
-    ({"grad_year": "1800"}, "graduation"), ({"sites": []}, "sites")])
+    ({"city": 5}, "text"), ({"daily_cap": "99"}, "daily limit"), ({"education": [{"degree": "B", "score": "great"}]}, "score"),
+    ({"education": [{"degree": "B", "end_year": "1800"}]}, "end year"), ({"sites": []}, "sites")])
 def test_invalid_form(change, msg):
     p, errs = ap.from_form({**FORM, **change})
     assert p is None and any(msg in x for x in errs), errs
@@ -143,8 +144,8 @@ def test_page_sites_match_python():
 def test_page_fields_match_validator():
     names = set(re.findall(r'<(?:input|select|textarea)[^>]*\bname="(\w+)"', page()))
     expected = set(ap.TEXT) | {"total_years", "notice", "current_ctc_lpa", "expected_ctc_lpa", "relocate",
-                               "sponsorship", "grad_year", "cgpa", "daily_cap", "consent", "dob", "relevant_years",
-                               "work_mode", "twelfth", "tenth", "disability"}
+                               "sponsorship", "daily_cap", "consent", "dob", "relevant_years",
+                               "work_mode", "disability"}
     assert names == expected
 
 

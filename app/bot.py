@@ -753,13 +753,16 @@ async def cmd_deleteme(update: Update, ctx: ContextTypes.DEFAULT_TYPE, user) -> 
 def form_data(user_id: int) -> tuple[dict, bool]:
     """(answers to pre-fill the form with, already saved?)"""
     signed_in = {k: v["saved"] or "yes" for k, v in storage.session_status(user_id).items()}
+    u = db.get_user(user_id)
+    # display only ("Saving to your bot account: …"); what gets saved is decided by Telegram's sender ID
+    extra = {"signed_in": signed_in, "account": {"id": user_id, "name": (u["first_name"] if u else "") or ""}}
     saved = ap.ApplyProfile.from_dict(storage.load_apply_profile(user_id))
     if saved:
-        return saved.to_dict() | {"signed_in": signed_in}, True
+        return saved.to_dict() | extra, True
     _, prof = load(user_id)
     text = storage.resume_text(user_id)
     guess = ap.guess_from_resume(text, (prof.name if prof else "") or find_name(text), prof.years if prof else None)
-    return guess.to_dict() | {"signed_in": signed_in}, False
+    return guess.to_dict() | extra, False
 
 
 @active_only
@@ -780,7 +783,8 @@ async def on_web_app_data(update: Update, ctx: ContextTypes.DEFAULT_TYPE, user) 
         data = None
     prof, errors = ap.from_form(data)
     if errors:
-        url = ui.form_url(settings.form_url, (data | {"signed_in": form_data(user["id"])[0]["signed_in"]})
+        fresh = form_data(user["id"])[0]
+        url = ui.form_url(settings.form_url, (data | {k: fresh[k] for k in ("signed_in", "account")})
                           if isinstance(data, dict) else form_data(user["id"])[0])
         return await reply(update, ctx, "⚠️ <b>Not saved</b>, please fix:\n" + "\n".join(f"• {e(x)}" for x in errors),
                            reply_markup=ui.form_kb(url))

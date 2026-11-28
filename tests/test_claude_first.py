@@ -396,7 +396,7 @@ def test_form_shows_sign_in_status(ai_on):
 
 @pytest.mark.parametrize("change, msg", [
     ({"pincode": "01234"}, "PIN code"), ({"pincode": "12345"}, "PIN code"), ({"dob": "1999-02-30"}, "date of birth"),
-    ({"dob": "2024-01-01"}, "date of birth"), ({"twelfth": "lots"}, "XII"), ({"tenth": "9 9"}, "Class X"),
+    ({"dob": "2024-01-01"}, "date of birth"), ({"education": [{"level": "phd!", "degree": "x"}]}, "unknown level"),
     ({"work_mode": "moon"}, "work_mode"), ({"disability": "maybe"}, "disability"),
     ({"relevant_years": "5", "total_years": "2"}, "relevant experience"), ({"summary": "x" * 401}, "summary"),
 ])
@@ -406,8 +406,7 @@ def test_new_fields_invalid(change, msg):
 
 
 def test_new_fields_valid_and_private():
-    p, errors = ap.from_form({**FORM, "pincode": "110001", "dob": "1999-02-28", "twelfth": "88%", "tenth": "9.2/10",
-                              "work_mode": "hybrid", "disability": "no", "relevant_years": "2",
+    p, errors = ap.from_form({**FORM, "pincode": "110001", "dob": "1999-02-28", "work_mode": "hybrid", "disability": "no", "relevant_years": "2",
                               "headline": "Backend engineer", "summary": "Line 1\nLine 2", "key_skills": "Python",
                               "languages": "English, Hindi"})
     assert not errors and p.summary == "Line 1\nLine 2" and p.relevant_years == 2.0 and p.work_mode == "hybrid"
@@ -422,3 +421,52 @@ def test_old_no_login_message_still_counts_as_not_connected(ai_on):
     assert ai.status()["state"] == "nologin"
     ai.record_status("")
     assert ai.status()["state"] == "ok"
+
+
+# ---------------- education list + account line ----------------
+
+def test_education_list_rules():
+    ok = [{"level": "masters", "degree": "M.Tech", "college": "IIT", "start_year": "2023", "end_year": "2025",
+           "score": "9.1/10"}, {"level": "bachelors", "degree": "B.Tech"}, {"degree": "", "college": ""}]
+    p, errors = ap.from_form({**FORM, "education": ok})
+    assert not errors and len(p.education) == 2                       # the empty row is dropped
+    assert p.education[0] == {"level": "masters", "degree": "M.Tech", "college": "IIT", "start_year": 2023,
+                              "end_year": 2025, "score": "9.1/10"}
+    for bad, msg in (([{"degree": "x"}] * 7, "at most 6"), ("x", "must be a list"), (["x"], "must be an object"),
+                     ([{"degree": "x", "start_year": "2025", "end_year": "2020"}], "after end year"),
+                     ([{"degree": "x" * 81}], "too long")):
+        p, errors = ap.from_form({**FORM, "education": bad})
+        assert p is None and any(msg in x for x in errors), (bad, errors)
+    assert "education" in ap.from_form(FORM)[0].for_claude()
+
+
+def test_old_single_education_is_migrated():
+    p = ap.ApplyProfile.from_dict({"full_name": "A", "degree": "B.Tech", "college": "DTU", "grad_year": 2022,
+                                   "cgpa": "8/10", "twelfth": "90%"})
+    assert p.education[0]["degree"] == "B.Tech" and p.education[0]["end_year"] == 2022
+    assert p.education[1] == {"level": "class12", "degree": "", "college": "", "start_year": None, "end_year": None,
+                              "score": "90%"}
+
+
+def test_page_education_matches_python():
+    page = ROOT / "docs" / "apply-form" / "index.html"
+    if not page.exists():
+        pytest.skip("docs not in the image")
+    html = page.read_text()
+    import re
+    levels = re.findall(r'\["(\w+)", "[^"]+"\]', html.split("var EDU_LEVELS")[1].split(";")[0])
+    assert set(levels) == set(ap.EDU_LEVELS) and f"MAX_EDUCATION = {ap.MAX_EDUCATION}" in html
+    assert "+ Add education" in html and "out.education = collectEdu()" in html
+
+
+def test_form_shows_account_but_saves_to_telegram_sender(ai_on):
+    with_resume(1)
+    data, _ = bot.form_data(1)
+    assert data["account"] == {"id": 1, "name": db.get_user(1)["first_name"] or ""}
+    b = FakeBot()
+    from tests.test_apply_form import web_app_update
+    forged = {**FORM, "account": {"id": 999}, "user_id": 999}      # whatever the page sends...
+    run(bot.on_web_app_data(web_app_update(1, json.dumps(forged)), make_ctx(b)))
+    assert storage.load_apply_profile(1) and storage.load_apply_profile(999) is None   # ...it is saved for user 1
+    assert "account" not in storage.load_apply_profile(1)
+    assert "🎓" in b.sent[-1].text and "B.Tech CSE" in b.sent[-1].text
