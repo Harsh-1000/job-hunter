@@ -5,6 +5,7 @@ import asyncio
 import html
 import json
 import logging
+import re
 import time
 from datetime import datetime, time as dtime, timedelta, timezone
 from functools import wraps
@@ -216,6 +217,13 @@ def set_ai_access(target: int, allowed: bool) -> str:
     return (f"🤖 Claude judge {'allowed' if allowed else 'turned off'} for {e(u['first_name'] or '')} ({target}).")
 
 
+def worker_line(health: dict) -> str:
+    login = {"host": "✅ this server's Claude login", "token": "✅ token", "api_key": "✅ API key"}.get(
+        health.get("auth_source", ""), "✅" if health.get("auth") else "❌ missing")
+    return (f" · model {e(health.get('model', ''))} · login {login}"
+            f" · {health.get('used_last_hour', 0)}/{health.get('budget', 0)} calls this hour")
+
+
 @admin_only
 async def cmd_ai(update: Update, ctx: ContextTypes.DEFAULT_TYPE, user) -> None:
     """/ai · /ai allow <id> · /ai block <id>"""
@@ -229,9 +237,7 @@ async def cmd_ai(update: Update, ctx: ContextTypes.DEFAULT_TYPE, user) -> None:
     health = await ai_mod.AIClient().health() if settings.ai_url else None
     who = [u for u in db.users("active") if ai_allowed(u)]
     lines = ["<b>🤖 Claude judge</b>",
-             f"Worker: {'✅ reachable' if health else '⚠️ not reachable'}"
-             + (f" · model {e(health.get('model', ''))} · login {'✅' if health.get('auth') else '❌ missing'}"
-                f" · {health.get('used_last_hour', 0)}/{health.get('budget', 0)} calls this hour" if health else ""),
+             f"Worker: {'✅ reachable' if health else '⚠️ not reachable'}" + (worker_line(health) if health else ""),
              f"State: {ui.AI_STATES.get(st['state'], st['state'])}" + (f" — {e(st['error'])}" if st["error"] else ""),
              f"Jobs judged in the last 24 h: {db.ai_calls_since(24)}",
              "Users with AI: " + (", ".join(f"{e(u['first_name'] or '')} <code>{u['id']}</code>" for u in who) or "—"),
@@ -532,6 +538,9 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE, user) -> None:
     if not key:
         return await reply(update, ctx, "Use the menu below 👇, or send me your resume as a file.",
                            reply_markup=ui.MAIN_KB)
+    if key.startswith("refai:"):
+        ctx.user_data.pop("awaiting", None)
+        return await write_ai_referral(update, ctx, user, key.split(":", 1)[1], update.message.text)
     f, p = load(user["id"])
     try:
         msg = apply_text_setting(f, key, update.message.text)
@@ -593,7 +602,55 @@ async def on_referral_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE, use
                          f.years(p.years if p else None) if (p or f.my_years is not None) else None,
                          fallback_role=f.keywords[0] if f.keywords else "")
     await reply(update, ctx, ui.referral_text(ref, row["title"], row["company"]),
-                reply_markup=ui.referral_kb(ref, referral.clean_company(row["company"])))
+                reply_markup=ui.referral_kb(ref, referral.clean_company(row["company"]),
+                                            job_id if ai_allowed(user) else ""))
+
+
+def clean_person(text: str) -> str:
+    """What the user typed about the referrer: one line, no control characters, at most 200 characters."""
+    t = " ".join(re.sub(r"[\x00-\x1f\x7f]", " ", text or "").split())[:200]
+    return "" if t in ("-", "–", "skip", "/skip") else t
+
+
+@active_only
+async def on_ai_referral_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE, user) -> None:
+    """🤖 Personal message by Claude: ask who the referral is for, then Claude writes to that person."""
+    q = update.callback_query
+    job_id = q.data.split(":", 1)[1]
+    if not db.get_delivery(user["id"], job_id):
+        return await q.answer("That job is no longer available.", show_alert=True)
+    if not ai_allowed(user):
+        return await q.answer("This uses Claude, which the admin hasn't turned on for you yet.", show_alert=True)
+    if not storage.resume_text(user["id"]):
+        return await q.answer("Send your resume first (as a file), so Claude can write in your words.",
+                              show_alert=True)
+    await q.answer()
+    ctx.user_data["awaiting"] = f"refai:{job_id}"
+    await reply(update, ctx, ui.REFERRAL_PERSON_PROMPT, reply_markup=ui.CANCEL_KB)
+
+
+async def write_ai_referral(update: Update, ctx: ContextTypes.DEFAULT_TYPE, user, job_id: str, text: str) -> None:
+    row = db.get_delivery(user["id"], job_id)
+    if not row:
+        return await reply(update, ctx, "That job is no longer available.", reply_markup=ui.MAIN_KB)
+    person = clean_person(text)
+    f, p = load(user["id"])
+    name = (p.name if p and p.name else "") or _name_from_saved_resume(user["id"]) or (user["first_name"] or "")
+    msg = await reply(update, ctx, f"🤖 Claude is writing to <b>{e(person or 'your contact')}</b>… (about 20–40 s)")
+    client = ai_mod.AIClient()
+    try:
+        ref = await client.referral(ai_mod.referral_payload(
+            row, storage.resume_text(user["id"]), person, name, f.years(p.years if p else None) if p else None))
+    finally:
+        await client.close()
+    try:
+        await msg.delete()
+    except TelegramError:
+        pass
+    if not ref:
+        return await reply(update, ctx, f"⚠️ Claude couldn't write it right now ({e(client.last_error or 'unavailable')})."
+                                        " The 🤝 template messages above still work.", reply_markup=ui.MAIN_KB)
+    await reply(update, ctx, ui.ai_referral_text(ref, row["title"], row["company"], person), reply_markup=ui.MAIN_KB)
 
 
 @active_only
@@ -724,13 +781,14 @@ async def cmd_deleteme(update: Update, ctx: ContextTypes.DEFAULT_TYPE, user) -> 
 
 def form_data(user_id: int) -> tuple[dict, bool]:
     """(answers to pre-fill the form with, already saved?)"""
+    signed_in = {k: v["saved"] or "yes" for k, v in storage.session_status(user_id).items()}
     saved = ap.ApplyProfile.from_dict(storage.load_apply_profile(user_id))
     if saved:
-        return saved.to_dict(), True
+        return saved.to_dict() | {"signed_in": signed_in}, True
     _, prof = load(user_id)
     text = storage.resume_text(user_id)
     guess = ap.guess_from_resume(text, (prof.name if prof else "") or find_name(text), prof.years if prof else None)
-    return guess.to_dict(), False
+    return guess.to_dict() | {"signed_in": signed_in}, False
 
 
 @active_only
@@ -751,13 +809,15 @@ async def on_web_app_data(update: Update, ctx: ContextTypes.DEFAULT_TYPE, user) 
         data = None
     prof, errors = ap.from_form(data)
     if errors:
-        url = ui.form_url(settings.form_url, data if isinstance(data, dict) else form_data(user["id"])[0])
+        url = ui.form_url(settings.form_url, (data | {"signed_in": form_data(user["id"])[0]["signed_in"]})
+                          if isinstance(data, dict) else form_data(user["id"])[0])
         return await reply(update, ctx, "⚠️ <b>Not saved</b>, please fix:\n" + "\n".join(f"• {e(x)}" for x in errors),
                            reply_markup=ui.form_kb(url))
     storage.save_apply_profile(user["id"], prof.to_dict())
     login = [k for k in prof.active_sites() if SITES[k]["kind"] == "login"]
     log.info("user %s saved the application form (%d auto-apply sites)", user["id"], len(prof.active_sites()))
-    await reply(update, ctx, ui.apply_profile_text(prof, login), reply_markup=ui.MAIN_KB)
+    await reply(update, ctx, ui.apply_profile_text(prof, login, storage.session_status(user["id"])),
+                reply_markup=ui.MAIN_KB)
 
 
 async def on_back_to_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1154,6 +1214,7 @@ def build() -> Application:
     app.add_handler(CallbackQueryHandler(on_filter_button, pattern=r"^f:"))
     app.add_handler(CallbackQueryHandler(on_job_button, pattern=r"^j:"))
     app.add_handler(CallbackQueryHandler(on_referral_button, pattern=r"^ref:"))
+    app.add_handler(CallbackQueryHandler(on_ai_referral_button, pattern=r"^refai:"))
     app.add_handler(CallbackQueryHandler(on_prepare_button, pattern=r"^prep:", block=False))
     app.add_handler(CallbackQueryHandler(on_resume_button, pattern=r"^r:"))
     app.add_handler(CallbackQueryHandler(on_clear_button, pattern=r"^c:"))

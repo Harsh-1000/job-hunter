@@ -5,6 +5,7 @@
         resume.txt.extracted                    plain text pulled out of it
         profile.json                            skills / years / keywords parsed from it
         apply_profile.json                      the 📝 Application form (contact, CTC, notice, auto-apply sites)
+        sessions/<site>.json                    a site sign-in saved by `jobhunter connect <site>` (cookies only)
 
 The folder name is the numeric Telegram user ID (Telegram guarantees it is unique and it never
 changes), so a user can only ever touch their own folder. Folders are created 0700 and files
@@ -83,3 +84,42 @@ def delete_user(user_id: int) -> None:
     d = user_dir(user_id)
     if d.exists():
         shutil.rmtree(d)
+
+
+# ---------- site sign-ins (written by scripts/connect_site.mjs on the host) ----------
+
+def session_path(user_id: int, site: str) -> Path:
+    from .apply_sites import SITES
+    if site not in SITES:
+        raise ValueError(f"unknown site {site!r}")
+    return user_dir(user_id) / "sessions" / f"{site}.json"
+
+
+def session_status(user_id: int) -> dict[str, dict]:
+    """site -> {"saved": "2026-11-28", "cookies": n, "expires": "2027-01-10" | ""} for every saved sign-in.
+    Reads only counts and dates; cookie values are never returned."""
+    from datetime import datetime, timezone
+
+    from .apply_sites import login_sites
+    out: dict[str, dict] = {}
+    for site in login_sites():
+        path = session_path(user_id, site)
+        try:
+            state = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        cookies = [c for c in state.get("cookies") or [] if isinstance(c, dict)]
+        if not cookies:
+            continue
+        exp = [c.get("expires") for c in cookies if isinstance(c.get("expires"), (int, float)) and c["expires"] > 0]
+        out[site] = {"saved": str(state.get("saved_at") or "")[:10], "cookies": len(cookies),
+                     "expires": datetime.fromtimestamp(max(exp), timezone.utc).strftime("%Y-%m-%d") if exp else ""}
+    return out
+
+
+def delete_session(user_id: int, site: str) -> bool:
+    path = session_path(user_id, site)
+    if path.exists():
+        path.unlink()
+        return True
+    return False

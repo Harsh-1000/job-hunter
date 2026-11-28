@@ -64,6 +64,10 @@
   #outside { display: none; background: #fff4e5; color: #7a4b00; padding: 10px 12px; border-radius: 10px;
              margin-bottom: 12px; font-size: 14px; }
   .count { float: right; font-size: 11px; }
+  .opt { font-size: 11px; }
+  .signin { font-size: 12px; margin-top: 4px; }
+  .signin.ok { color: #1e8e3e; }
+  .signin code { font-size: 12px; background: var(--bg2); padding: 1px 5px; border-radius: 5px; }
 </style>
 </head>
 <body>
@@ -80,7 +84,11 @@
       <label>Email<input name="email" type="email" maxlength="120" autocomplete="email" required></label>
       <label>Phone<input name="phone" type="tel" maxlength="20" autocomplete="tel" placeholder="+91 98xxxxxxxx" required></label>
     </div>
-    <label>City you live in<input name="city" maxlength="60" placeholder="New Delhi" required></label>
+    <div class="row">
+      <label>City you live in<input name="city" maxlength="60" placeholder="New Delhi" autocomplete="address-level2" required></label>
+      <label>PIN code<input name="pincode" maxlength="6" inputmode="numeric" pattern="[1-9][0-9]{5}" autocomplete="postal-code" placeholder="110001"></label>
+    </div>
+    <label>Date of birth <span class="opt">(optional, some forms ask)</span><input name="dob" type="date" min="1940-01-01" max="2019-12-31" autocomplete="bday"></label>
     <label>LinkedIn profile<input name="linkedin" type="url" maxlength="150" placeholder="https://www.linkedin.com/in/…"></label>
     <div class="row">
       <label>GitHub<input name="github" type="url" maxlength="150" placeholder="https://github.com/…"></label>
@@ -96,6 +104,9 @@
     </div>
     <div class="row">
       <label>Total experience (years)<input name="total_years" type="number" step="0.1" min="0" max="40" inputmode="decimal" required></label>
+      <label>Relevant experience (years)<input name="relevant_years" type="number" step="0.1" min="0" max="40" inputmode="decimal"></label>
+    </div>
+    <div class="row">
       <label>Notice period
         <select name="notice"><option value="immediate">Immediate</option><option value="15">15 days</option>
           <option value="30">30 days</option><option value="60">60 days</option><option value="90">90 days</option></select></label>
@@ -108,7 +119,11 @@
       <label>Open to relocate?<select name="relocate"><option value="yes">Yes</option><option value="no">No</option></select></label>
       <label>Need visa sponsorship?<select name="sponsorship"><option value="no">No</option><option value="yes">Yes</option></select></label>
     </div>
-    <label>Preferred locations<input name="preferred_locations" maxlength="120" placeholder="Delhi NCR, Remote"></label>
+    <div class="row">
+      <label>Preferred locations<input name="preferred_locations" maxlength="120" placeholder="Delhi NCR, Remote"></label>
+      <label>Work mode<select name="work_mode"><option value="any">Any</option><option value="remote">Remote</option>
+        <option value="hybrid">Hybrid</option><option value="onsite">On-site</option></select></label>
+    </div>
     <label>Work authorisation<input name="work_auth" maxlength="80" placeholder="Indian citizen"></label>
   </section>
 
@@ -120,8 +135,23 @@
       <label>Graduation year<input name="grad_year" type="number" min="1970" max="2035" inputmode="numeric"></label>
       <label>CGPA / %<input name="cgpa" maxlength="12" placeholder="8.2/10"></label>
     </div>
+    <div class="row">
+      <label>Class XII marks<input name="twelfth" maxlength="12" placeholder="88%"></label>
+      <label>Class X marks<input name="tenth" maxlength="12" placeholder="92%"></label>
+    </div>
     <label>Gender (only if a form requires it)
       <select name="gender"><option value="">Prefer not to say</option><option>Male</option><option>Female</option><option>Non-binary</option></select></label>
+    <label>Disability <span class="opt">(only if a form asks)</span>
+      <select name="disability"><option value="">Prefer not to say</option><option value="no">No</option><option value="yes">Yes</option></select></label>
+  </section>
+
+  <section>
+    <h2>Profile</h2>
+    <label>Headline <span class="opt">(one line, like on Naukri)</span><input name="headline" maxlength="120" placeholder="Backend engineer · Python, Django, AWS · 3 yrs"></label>
+    <label>Key skills<input name="key_skills" maxlength="200" placeholder="Python, Django, PostgreSQL, AWS, Docker"></label>
+    <label>Profile summary <span class="count" data-for="summary"></span>
+      <textarea name="summary" maxlength="400" placeholder="2–4 lines about you"></textarea></label>
+    <label>Languages<input name="languages" maxlength="80" placeholder="English, Hindi"></label>
   </section>
 
   <section>
@@ -184,7 +214,7 @@
     } catch (err) { return {}; }
   }
 
-  function renderSites(current) {
+  function renderSites(current, signedIn) {
     var box = document.getElementById("sites");
     SITES.forEach(function (s) {
       var key = s[0];
@@ -212,14 +242,26 @@
       warn.style.display = (s[2] === "login" && modes[key] === "auto") ? "block" : "none";
       head.appendChild(name); head.appendChild(seg);
       var note = document.createElement("div"); note.className = "note"; note.textContent = s[3];
-      wrap.appendChild(head); wrap.appendChild(note); wrap.appendChild(warn);
+      wrap.appendChild(head); wrap.appendChild(note);
+      if (s[2] === "login") {   // sign-in status: you log in on the real site, the bot never sees your password
+        var si = document.createElement("div"), when = signedIn && signedIn[key];
+        si.className = "signin" + (when ? " ok" : "");
+        if (when) si.textContent = "🔐 Signed in (saved " + when + ")";
+        else {
+          si.appendChild(document.createTextNode("🔑 Not signed in yet. On the server run "));
+          var c = document.createElement("code"); c.textContent = "jobhunter connect " + key; si.appendChild(c);
+          si.appendChild(document.createTextNode(": you log in on the real site, the bot never sees your password."));
+        }
+        wrap.appendChild(si);
+      }
+      wrap.appendChild(warn);
       box.appendChild(wrap);
     });
   }
 
   function fill(d) {
     Array.prototype.forEach.call(form.elements, function (el) {
-      if (!el.name || !(el.name in d) || d[el.name] === null) return;
+      if (!el.name || !(el.name in d) || d[el.name] === null || el.type === "button") return;
       if (el.type === "checkbox") el.checked = d[el.name] === true;
       else el.value = String(d[el.name]);
     });
@@ -242,6 +284,7 @@
     if (!/^\+?[0-9][0-9 ()-]{6,18}[0-9]$/.test(d.phone)) errs.push("Phone doesn't look right.");
     if (!d.city) errs.push("City is needed.");
     if (d.total_years === "") errs.push("Total experience is needed.");
+    if (d.pincode && !/^[1-9][0-9]{5}$/.test(d.pincode)) errs.push("PIN code must be 6 digits.");
     ["linkedin", "github", "portfolio"].forEach(function (k) {
       if (d[k] && !/^https:\/\/\S+\.\S+$/.test(d[k])) errs.push(k + " must be a full https:// link.");
     });
@@ -267,7 +310,7 @@
   });
 
   var data = decodeHash();
-  renderSites(data.sites);
+  renderSites(data.sites, data.signed_in);
   fill(data);
   document.getElementById("save").addEventListener("click", save);
   if (tg) {

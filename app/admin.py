@@ -10,6 +10,9 @@
     python -m app.admin ai-allow <id>      let a user use the Claude judge (admins always can)
     python -m app.admin ai-block <id>      stop a user using it
     python -m app.admin ai-test [<id>]     ask Claude to judge the newest job for a user (default: first admin)
+    python -m app.admin connect-info <site> [<id>]   login URL, hosts and session file (for `jobhunter connect`)
+    python -m app.admin disconnect <site> [<id>]     forget a saved site sign-in
+    python -m app.admin connections [<id>]           which sites a user is signed in to
 """
 from __future__ import annotations
 
@@ -19,6 +22,7 @@ import sys
 
 from . import ai as ai_mod
 from . import db, storage
+from .apply_sites import SITES, login_sites
 from .scanner import ai_allowed, clear_cooldown, in_cooldown, user_context
 
 
@@ -49,8 +53,17 @@ async def _ai_test(uid: int | None) -> int:
     if not v:
         print("FAILED:", client.last_error)
         return 1
+    ai_mod.record_status("")
     print(json.dumps(v.to_dict(), indent=2))
     return 0
+
+
+def _target_user(arg: str):
+    """The user a sign-in belongs to: the given ID, else the first admin."""
+    for u in db.users("active"):
+        if (arg.isdigit() and u["id"] == int(arg)) or (not arg and u["is_admin"]):
+            return u
+    return None
 
 
 def main(argv: list[str]) -> int:
@@ -95,6 +108,32 @@ def main(argv: list[str]) -> int:
         return 0
     if cmd == "ai-test":
         return asyncio.run(_ai_test(int(arg) if arg.isdigit() else None))
+    if cmd in ("connect-info", "disconnect"):
+        if arg not in login_sites():
+            print(f"Unknown site {arg!r}. Sites you sign in to: {', '.join(login_sites())}")
+            return 1
+        u = _target_user(argv[2] if len(argv) > 2 else "")
+        if not u:
+            print("No such active user (or no admin yet). See: jobhunter users")
+            return 1
+        if cmd == "disconnect":
+            print("Signed out: saved sign-in deleted." if storage.delete_session(u["id"], arg) else "Nothing saved.")
+            return 0
+        site = SITES[arg]
+        rel = storage.session_path(u["id"], arg).relative_to(storage.settings.users_dir.parent)
+        print("\t".join([site["login_url"], ",".join(site["hosts"]), str(rel), str(u["id"])]))
+        return 0
+    if cmd == "connections":
+        u = _target_user(arg)
+        if not u:
+            print("No such active user (or no admin yet).")
+            return 1
+        st = storage.session_status(u["id"])
+        for site in login_sites():
+            s_ = st.get(site)
+            print(f"{site:<10} " + (f"signed in {s_['saved']} · {s_['cookies']} cookies · expires {s_['expires'] or '?'}"
+                                    if s_ else "not signed in"))
+        return 0
     if cmd == "reset-cooldown":
         clear_cooldown()
         print("cooldown cleared")

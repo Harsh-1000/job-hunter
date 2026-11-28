@@ -143,7 +143,8 @@ def test_page_sites_match_python():
 def test_page_fields_match_validator():
     names = set(re.findall(r'<(?:input|select|textarea)[^>]*\bname="(\w+)"', page()))
     expected = set(ap.TEXT) | {"total_years", "notice", "current_ctc_lpa", "expected_ctc_lpa", "relocate",
-                               "sponsorship", "grad_year", "cgpa", "daily_cap", "consent"}
+                               "sponsorship", "grad_year", "cgpa", "daily_cap", "consent", "dob", "relevant_years",
+                               "work_mode", "twelfth", "tenth", "disability"}
     assert names == expected
 
 
@@ -205,7 +206,8 @@ def test_web_app_data_saved():
     saved = storage.load_apply_profile(1)
     assert saved["expected_ctc_lpa"] == 18.5 and saved["sites"]["greenhouse"] == "auto"
     t = b.sent[-1].text
-    assert "saved" in t and "Greenhouse" in t and "Auto" in t and "Naukri" in t and "own login" in t
+    assert "saved" in t and "Greenhouse" in t and "Auto" in t and "Naukri" in t and "jobhunter connect naukri" in t
+    assert "never sees your password" in t
     assert b.sent[-1].kw["reply_markup"] is ui.MAIN_KB
 
 

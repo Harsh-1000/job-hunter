@@ -194,6 +194,8 @@ def job_text(row, state: str = "") -> str:
         if ai:
             lines.append(f"🤖 <b>Claude: {score}% · {e(AI_LABELS.get(ai.get('verdict'), ''))}</b> {bar}")
             lines.append(f"💬 <i>{e(ai.get('why', ''))}</i>")
+            if d.get("ai_rescued"):
+                lines.append("🔍 <i>Found by Claude: the keyword match had missed this one</i>")
         else:
             lines.append(f"🎯 <b>Match {score}%</b> {bar}"
                          + (" <i>(keyword match — Claude unavailable)</i>" if d.get("ai_offline") else ""))
@@ -269,10 +271,35 @@ def referral_text(ref, title: str, company: str) -> str:
             "Be quick: referrals work best in the first days after a job is posted.")
 
 
-def referral_kb(ref, company: str) -> InlineKeyboardMarkup:
+def referral_kb(ref, company: str, job_id: str = "") -> InlineKeyboardMarkup:
     short = company[:22]
-    return InlineKeyboardMarkup([[B(f"🔎 People at {short}", url=ref.employees_url)],
-                                 [B(f"🔎 Recruiters at {short}", url=ref.recruiters_url)]])
+    rows = [[B(f"🔎 People at {short}", url=ref.employees_url)],
+            [B(f"🔎 Recruiters at {short}", url=ref.recruiters_url)]]
+    if job_id:
+        rows.append([B("🤖 Personal message by Claude", callback_data=f"refai:{job_id}")])
+    return InlineKeyboardMarkup(rows)
+
+
+REFERRAL_PERSON_PROMPT = (
+    "🤖 <b>Who are you asking for the referral?</b>\n\n"
+    "Send their name and anything that helps, in one message, for example:\n"
+    "<code>Priya Sharma, Senior SDE there, we were at DTU together</code>\n"
+    "<code>Rahul, recruiter, met at a meetup</code>\n"
+    "<code>Ankit</code>\n\n"
+    "Claude writes the note, message and follow-up to that person, from your resume and this job. "
+    "Send <code>-</code> for a general one.")
+
+
+def ai_referral_text(ref: dict, title: str, company: str, person: str) -> str:
+    who = f" to <b>{e(person)}</b>" if person else ""
+    return (f"🤖 <b>Referral messages by Claude</b>{who} — {e(title)} at {e(company)}\n"
+            "<i>Tap a grey box to copy it. Check it reads like you before sending.</i>\n\n"
+            f"<b>1️⃣ Connection request note</b> ({len(ref['note'])}/200 characters)\n"
+            f"<pre>{e(ref['note'])}</pre>\n\n"
+            "<b>2️⃣ Full message</b>: after they accept, or as a DM / email\n"
+            f"<pre>{e(ref['message'])}</pre>\n\n"
+            f"<b>✉️ Email subject</b>\n<pre>{e(ref['subject'])}</pre>\n\n"
+            f"<b>3️⃣ Follow-up</b>: if there's no reply in 4–5 days\n<pre>{e(ref['followup'])}</pre>")
 
 
 JOB_STATES = {"applied": "✅ <b>Applied</b>", "saved": "⭐ <b>Saved</b>", "hidden": "🙈 <i>Hidden</i>", "sent": ""}
@@ -531,7 +558,7 @@ def form_intro_text(saved: bool) -> str:
               "<i>Private: the page runs inside Telegram, and your answers come straight back to this bot.</i>")
 
 
-def apply_profile_text(p, login_sites: list[str]) -> str:
+def apply_profile_text(p, login_sites: list[str], signed_in: dict | None = None) -> str:
     from .apply_sites import MODE_LABELS, SITES
     lines = ["✅ <b>Application form saved</b>",
              f"👤 {e(p.full_name)} · {e(p.city)} · {p.total_years if p.total_years is not None else '?'} yrs · "
@@ -544,9 +571,16 @@ def apply_profile_text(p, login_sites: list[str]) -> str:
         lines.append("\n🤖 <b>Auto-apply on:</b>")
         lines += [f"  • {e(SITES[k]['label'])}: <b>{MODE_LABELS[m]}</b>" for k, m in active.items()]
         lines.append(f"  Daily limit: {p.daily_cap}")
-        if login_sites:
-            lines.append("\n🔑 These need your own login once: " + e(", ".join(SITES[k]["label"] for k in login_sites))
-                         + ". The one-time login is done on the server by the admin.")
+        signed_in = signed_in or {}
+        todo = [k for k in login_sites if k not in signed_in]
+        done = [k for k in login_sites if k in signed_in]
+        if done:
+            lines.append("\n🔐 Signed in: " + e(", ".join(SITES[k]["label"] for k in done)))
+        if todo:
+            lines.append("\n🔑 <b>Sign in once</b> to: " + e(", ".join(SITES[k]["label"] for k in todo)) + ".\n"
+                         "On the server run " + ", ".join(f"<code>jobhunter connect {k}</code>" for k in todo)
+                         + ": Chrome opens the real site, you log in there yourself (OTP / CAPTCHA too), "
+                           "and only that site's sign-in is saved. The bot never sees your password.")
     else:
         lines.append("\n🤖 Auto-apply: off for every site (you can still use ✍️ Prepare on any job).")
     if p.missing():

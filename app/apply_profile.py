@@ -7,6 +7,7 @@ Used by ✍️ Prepare (Claude writes answers) and by auto-apply (Claude fills f
 from __future__ import annotations
 
 import re
+from datetime import date
 from dataclasses import asdict, dataclass, field, fields
 
 from .apply_sites import DEFAULT_DAILY_CAP, MAX_DAILY_CAP, MODES, SITES, default_modes
@@ -16,11 +17,16 @@ EMAIL_RE = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,190}\.[A-Za-z]{2,24}$")
 PHONE_RE = re.compile(r"^\+?[0-9][0-9 ()-]{6,18}[0-9]$")
 NOTICE = ("immediate", "15", "30", "60", "90")
 YES_NO = ("yes", "no")
+WORK_MODES = ("any", "remote", "hybrid", "onsite")
+DISABILITY = ("", "no", "yes")
+MARKS_RE = re.compile(r"\d{1,3}(\.\d{1,2})?\s*(%|/\s*10|/\s*4)?")
 
 # field -> max length (text fields)
 TEXT = {"full_name": 60, "email": 120, "phone": 20, "city": 60, "linkedin": 150, "github": 150,
         "portfolio": 150, "current_company": 80, "current_title": 80, "preferred_locations": 120,
-        "work_auth": 80, "degree": 80, "college": 120, "gender": 20, "why_default": 400, "cover_note": 600}
+        "work_auth": 80, "degree": 80, "college": 120, "gender": 20, "why_default": 400, "cover_note": 600,
+        "pincode": 6, "headline": 120, "summary": 400, "key_skills": 200, "languages": 80}
+MULTILINE = ("why_default", "cover_note", "summary")
 URLS = ("linkedin", "github", "portfolio")
 
 
@@ -30,12 +36,20 @@ class ApplyProfile:
     email: str = ""
     phone: str = ""
     city: str = ""
+    pincode: str = ""
+    dob: str = ""                      # YYYY-MM-DD (some Indian forms ask; optional)
     linkedin: str = ""
     github: str = ""
     portfolio: str = ""
     current_company: str = ""
     current_title: str = ""
     total_years: float | None = None
+    relevant_years: float | None = None
+    headline: str = ""                 # one line, like a Naukri resume headline
+    summary: str = ""                  # 2-4 line profile summary
+    key_skills: str = ""
+    languages: str = ""
+    work_mode: str = "any"             # any | remote | hybrid | onsite
     notice: str = "30"                 # immediate | 15 | 30 | 60 | 90 (days)
     current_ctc_lpa: float | None = None
     expected_ctc_lpa: float | None = None
@@ -47,7 +61,10 @@ class ApplyProfile:
     college: str = ""
     grad_year: int | None = None
     cgpa: str = ""
+    twelfth: str = ""                  # class XII marks, "88%"
+    tenth: str = ""                    # class X marks
     gender: str = ""
+    disability: str = ""               # "" (prefer not to say) | no | yes
     why_default: str = ""
     cover_note: str = ""
     sites: dict[str, str] = field(default_factory=default_modes)
@@ -79,9 +96,9 @@ class ApplyProfile:
         return {k: m for k, m in self.sites.items() if m != "off"} if self.consent else {}
 
     def for_claude(self) -> dict:
-        """What Claude may see to write answers: no email / phone (not needed to write text)."""
+        """What Claude may see to write answers: no contact details or birth date (not needed to write text)."""
         d = self.to_dict()
-        for k in ("email", "phone", "sites", "daily_cap", "consent"):
+        for k in ("email", "phone", "pincode", "dob", "disability", "sites", "daily_cap", "consent"):
             d.pop(k, None)
         return {k: v for k, v in d.items() if v not in ("", None)}
 
@@ -111,7 +128,7 @@ def from_form(data) -> tuple[ApplyProfile | None, list[str]]:
         if not isinstance(v, str):
             errors.append(f"{k} must be text")
             continue
-        v = re.sub(r"[\x00-\x1f\x7f]", " ", v) if k not in ("why_default", "cover_note") else \
+        v = re.sub(r"[\x00-\x1f\x7f]", " ", v) if k not in MULTILINE else \
             re.sub(r"[\x00-\x09\x0b-\x1f\x7f]", " ", v)
         v = v.strip()
         if len(v) > n:
@@ -126,15 +143,32 @@ def from_form(data) -> tuple[ApplyProfile | None, list[str]]:
         v = getattr(p, k)
         if v and not re.match(r"^https://[^\s/]+\.[^\s]+$", v):
             errors.append(f"{k} must be a full https:// link")
+    if p.pincode and not re.fullmatch(r"[1-9]\d{5}", p.pincode):
+        errors.append("PIN code must be 6 digits")
+    dob = str(data.get("dob", "") or "").strip()
+    if dob:
+        try:
+            ok = re.fullmatch(r"(19[4-9]\d|20[01]\d)-\d\d-\d\d", dob) and date.fromisoformat(dob)
+        except ValueError:
+            ok = False
+        if not ok:
+            errors.append("date of birth must be a real date (YYYY-MM-DD)")
+        else:
+            p.dob = dob
     p.total_years = _num(data.get("total_years"), 0, 40, "years of experience", errors)
+    p.relevant_years = _num(data.get("relevant_years"), 0, 40, "relevant experience", errors)
+    if p.relevant_years is not None and p.total_years is not None and p.relevant_years > p.total_years:
+        errors.append("relevant experience can't be more than total experience")
     p.current_ctc_lpa = _num(data.get("current_ctc_lpa"), 0, 500, "current CTC", errors)
     p.expected_ctc_lpa = _num(data.get("expected_ctc_lpa"), 0, 500, "expected CTC", errors)
     p.grad_year = _num(data.get("grad_year"), 1970, 2035, "graduation year", errors, integer=True)
-    cgpa = str(data.get("cgpa", "") or "").strip()
-    if cgpa and not re.fullmatch(r"\d{1,3}(\.\d{1,2})?\s*(%|/\s*10|/\s*4)?", cgpa):
-        errors.append("CGPA should look like 8.2, 8.2/10 or 76%")
-    p.cgpa = cgpa
-    for k, allowed in (("notice", NOTICE), ("relocate", YES_NO), ("sponsorship", YES_NO)):
+    for k, label in (("cgpa", "CGPA"), ("twelfth", "Class XII marks"), ("tenth", "Class X marks")):
+        v = str(data.get(k, "") or "").strip()
+        if v and not MARKS_RE.fullmatch(v):
+            errors.append(f"{label} should look like 8.2, 8.2/10 or 76%")
+        setattr(p, k, v)
+    for k, allowed in (("notice", NOTICE), ("relocate", YES_NO), ("sponsorship", YES_NO),
+                       ("work_mode", WORK_MODES), ("disability", DISABILITY)):
         v = str(data.get(k, getattr(p, k)) or "").strip().lower()
         if v not in allowed:
             errors.append(f"{k} must be one of {', '.join(allowed)}")

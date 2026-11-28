@@ -25,6 +25,10 @@ services:
     init: true
     read_only: true                    # nothing in the image can be changed; scratch space is /tmp only
     tmpfs: [/tmp]
+    volumes:
+      # your own Claude Code login on this machine (the account `claude` uses here). Read-write only because
+      # Claude refreshes the login token in it; the worker keeps its config in /tmp. CLAUDE_DIR overrides.
+      - ${CLAUDE_DIR:-${HOME}/.claude}:/claude-host
     environment:                       # only the Claude settings from .env, nothing else (no Telegram token)
       CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}

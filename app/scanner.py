@@ -24,6 +24,11 @@ from .resume import ResumeProfile
 
 log = logging.getLogger(__name__)
 
+# Keyword verdicts Claude may overturn: the keyword formula said "not a match", but Claude reads the whole
+# description. The user's own hard filters (excluded words/companies, applicants, years, Easy Apply, age) still
+# decide on their own: Claude never sees those jobs.
+SOFT_REJECTS = ("threshold", "unrelated")
+AI_WAIT_MAX_MINUTES = 90   # a job not judged by then (Claude busy / over budget) falls back to the keyword verdict
 POSTED_HOURS = {"live": 1, "r3600": 1, "r21600": 6, "r86400": 24, "r604800": 168, "r2592000": 720}
 MAX_DETAILS_PER_CYCLE = 60
 
@@ -99,10 +104,19 @@ def too_old(row, f: Filters) -> str:
     return f"posted {row['posted'] or 'too long ago'} (live mode: ≤ {settings.live_max_age_minutes} min)"
 
 
+def near_miss(m) -> bool:
+    """A keyword reject Claude should still read: under the threshold, or "unrelated" but sharing at least one
+    skill or title word with the resume (a "Sales Executive" with nothing in common never costs a Claude call)."""
+    if m.code == "threshold":
+        return True
+    return m.code == "unrelated" and bool(m.matched or m.title_rel > 0)
+
+
 def judge(user_id: int, row, f: Filters, profile: ResumeProfile | None, hold: bool = False) -> str:
     """Score one delivery row that has its job details; store the result. Returns new status.
-    hold=True (Claude judges this user's jobs): a keyword match becomes 'ai_wait' instead of 'pending',
-    so it isn't sent before Claude has looked at it."""
+    hold=True (Claude judges this user's jobs): Claude looks first. Keyword matches AND keyword "near misses"
+    (SOFT_REJECTS) become 'ai_wait'; Claude's verdict decides. The keyword verdict is kept in details["kw"]
+    and used only if Claude can't judge the job."""
     old = too_old(row, f)
     if old:
         db.set_result(user_id, row["job_id"], "rejected", None, old, "old")
@@ -115,22 +129,30 @@ def judge(user_id: int, row, f: Filters, profile: ResumeProfile | None, hold: bo
         db.set_result(user_id, row["job_id"], "rejected", None, "same role already sent (other city)", "duplicate")
         return "rejected"
     m = evaluate(row["title"], row["company"], row["description"] or "", row["applicants"] or "", profile, f)
-    status = ("ai_wait" if hold else "pending") if m.ok else "rejected"
-    db.set_result(user_id, row["job_id"], status, m.score, m.reason, m.code,
-                  {"match": m.to_dict(), "keyword": row["keyword"]})
+    details = {"match": m.to_dict(), "keyword": row["keyword"]}
+    if hold and (m.ok or near_miss(m)):
+        details["kw"] = {"ok": m.ok, "reason": m.reason, "code": m.code}
+        db.set_result(user_id, row["job_id"], "ai_wait", m.score, "", "", details)
+        return "ai_wait"
+    status = "pending" if m.ok else "rejected"
+    db.set_result(user_id, row["job_id"], status, m.score, m.reason, m.code, details)
     return status
 
 
 def apply_ai(user_id: int, job_id: str, f: Filters, v: AIVerdict | None, why_not: str = "") -> str:
-    """Turn an 'ai_wait' row into pending/rejected using Claude's verdict, or (v=None) release it with the
-    keyword score and a note why Claude didn't judge it. Returns the new status."""
+    """Turn an 'ai_wait' row into pending/rejected using Claude's verdict, or (v=None) fall back to the keyword
+    verdict (matches go out tagged with why Claude didn't judge them). Returns the new status."""
     d = db.get_delivery(user_id, job_id)
     if not d:
         return ""
     details = json.loads(d["details"] or "{}")
-    details.pop("ai", None)
-    details.pop("ai_offline", None)
+    for k in ("ai", "ai_offline", "ai_rescued"):
+        details.pop(k, None)
+    kw = details.get("kw") or {"ok": True}
     if v is None:
+        if not kw.get("ok"):   # the keyword match said no, and Claude couldn't look: keep it out
+            db.set_result(user_id, job_id, "rejected", d["score"], kw.get("reason", ""), kw.get("code", ""), details)
+            return "rejected"
         if why_not and why_not != ai_mod.NO_LOGIN:   # Claude not set up yet is not an outage: no tag
             details["ai_offline"] = why_not
         db.set_result(user_id, job_id, "pending", d["score"], "", "", details)
@@ -143,6 +165,8 @@ def apply_ai(user_id: int, job_id: str, f: Filters, v: AIVerdict | None, why_not
         db.set_result(user_id, job_id, "rejected", v.score, f"match {v.score}% < your {f.min_score}% threshold",
                       "threshold", details)
         return "rejected"
+    if not kw.get("ok"):
+        details["ai_rescued"] = True   # the keyword match missed it; Claude found it
     db.set_result(user_id, job_id, "pending", v.score, "", "", details)
     return "pending"
 
@@ -341,7 +365,8 @@ class Scanner:
 
     async def ai_review(self, ctx: dict[int, tuple], res: CycleResult) -> None:
         """Every 'ai_wait' row -> Claude's verdict (cached per job + resume), at most AI_MAX_PER_CYCLE new calls.
-        If Claude is offline / over budget, the rows are released with the keyword score so nothing is lost."""
+        Keyword matches go first (rows are ordered by keyword score). If Claude is offline, or a row has waited
+        AI_WAIT_MAX_MINUTES, it falls back to the keyword verdict so nothing is lost and nothing waits forever."""
         client: AIClient | None = None
         calls, failed, error = 0, False, ""
         try:
@@ -364,6 +389,9 @@ class Scanner:
                         self._count(res, apply_ai(uid, r["job_id"], f, None, error))
                         continue
                     if calls >= settings.ai_max_per_cycle:
+                        age = db.age_minutes(r["created_at"])
+                        if age is not None and age > AI_WAIT_MAX_MINUTES:
+                            self._count(res, apply_ai(uid, r["job_id"], f, None, "Claude busy"))
                         continue   # stays ai_wait: judged next cycle
                     client = client or self.ai_factory()
                     calls += 1

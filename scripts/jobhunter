@@ -104,6 +104,18 @@ case "$CMD" in
             *)      echo "Usage: jobhunter ai login|status|test [id]|allow <id>|block <id>|logs" ;;
         esac ;;
 
+    # ---------------- site sign-ins (you log in yourself in Chrome; only that site's cookies are saved)
+    connect)
+        site="${1:-}"; [[ -n "$site" ]] || { echo "Usage: jobhunter connect naukri|indeed|wellfound|gfg|linkedin [user id]"; exit 1; }
+        info="$(admin connect-info "$site" "${2:-}")" || { echo "$info"; exit 1; }
+        IFS=$'\t' read -r url hosts rel uid <<<"$info"
+        command -v node >/dev/null || { echo "Needs Node.js 22+ on this machine."; exit 1; }
+        [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]] || echo "⚠️  No screen found (SSH?). Run this on the machine's desktop."
+        mkdir -p "data/$(dirname "$rel")"; chmod 700 "data/$(dirname "$rel")"
+        node scripts/connect_site.mjs "$site" "$url" "$hosts" "data/$rel" && echo "   (for Telegram user $uid)" ;;
+    disconnect)  admin disconnect "${1:-}" "${2:-}" ;;
+    connections) admin connections "${1:-}" ;;
+
     help|-h|--help|*)
         [[ "$CMD" =~ ^(help|-h|--help)$ ]] || echo "Unknown command: $CMD"
         cat <<'TXT'
@@ -133,11 +145,17 @@ Job Hunter bot — helper commands (run from anywhere, also over SSH)
    jobhunter watchdog install  check every 10 min from cron: restart + Telegram alert if the bot is down
    jobhunter watchdog [status|run|remove]
 
- Claude judge (AI)
-   jobhunter ai login          connect your Claude subscription (once)
+ Claude (AI)
+   Claude uses this machine's own Claude Code login (~/.claude): log in once with `claude`.
+   jobhunter ai login          or: save a separate long-lived token instead
    jobhunter ai status         worker health, who may use it · jobhunter ai logs
    jobhunter ai test [id]      judge the newest job for a user, print Claude's verdict
    jobhunter ai allow <id>     let a user use Claude (uses your plan) · jobhunter ai block <id>
+
+ Job-site sign-ins (for auto-apply; you type your password into the real site, never into the bot)
+   jobhunter connect <site> [id]     open the site's login page in Chrome, save the sign-in
+                                     sites: naukri indeed wellfound gfg linkedin
+   jobhunter connections [id]        which sites are signed in · jobhunter disconnect <site> [id]
 TXT
         ;;
 esac

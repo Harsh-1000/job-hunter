@@ -172,7 +172,8 @@ Required years come from the description. It recognises "2-4 years", "3+ yrs", "
 
 ### 🤖 Claude judge (`app/ai.py`, `ai/server.py`)
 
-Claude reads every job that passed the keyword hard filters above, the way a recruiter would.
+**Claude looks first; the keyword match is only the fallback.** Claude reads every job that passed the user's own
+hard filters, the way a recruiter would, including the keyword "near misses" the formula would have dropped.
 
 * **Who gets it:**
   * admins, plus users an admin allows with `/ai allow <id>` or `jobhunter ai allow <id>`. It spends the owner's
@@ -180,9 +181,14 @@ Claude reads every job that passed the keyword hard filters above, the way a rec
   * the user must have a resume and must not have switched it off (`Filters.ai_judge`, ⚙️ Filters → 🤖);
   * the server needs `AI_URL`, which `docker-compose.yml` sets to `http://ai:8787`, plus a Claude login in
     `.env`.
+* **What Claude sees:**
+  * keyword matches, and the keyword **near misses** (`scanner.near_miss`): `threshold`, and `unrelated` jobs
+    that share at least one skill or title word with the resume;
+  * never the user's hard filters: excluded title words or companies, too many applicants, years/fresher, Easy
+    Apply only, too old, duplicates. A "Sales Executive" with nothing in common never costs a call.
 * **Flow:**
-  * `scanner.judge(hold=True)` puts a keyword match in **`ai_wait`** instead of `pending`, so it isn't sent
-    before Claude has seen it;
+  * `scanner.judge(hold=True)` puts those rows in **`ai_wait`**, keeping the keyword verdict in
+    `details["kw"] = {ok, reason, code}`, so nothing is sent before Claude has seen it;
   * step 3 of the cycle (`Scanner.ai_review`) sends each `ai_wait` row to the worker. That's at most
     `AI_MAX_PER_CYCLE` (20) new calls per cycle; the rest wait for the next cycle.
 * **Verdict:** `{score 0-100, verdict strong|good|stretch|skip, why, missing_skills, seniority_ok}`, strictly
@@ -190,12 +196,15 @@ Claude reads every job that passed the keyword hard filters above, the way a rec
   * `skip` → rejected with code **`ai_skip`**;
   * a score below the user's threshold → `threshold`;
   * otherwise `pending`, with Claude's score replacing the keyword score. The alert shows `🤖 Claude: 82% ·
-    Strong fit` plus the *why*.
+    Strong fit` plus the *why*;
+  * when the keyword match had said no, the alert adds "🔍 Found by Claude: the keyword match had missed this
+    one" (`details["ai_rescued"]`).
 * **Cache:** `ai_verdicts(job_id, phash)`, where `phash` = sha1(resume text, targets, years). A job is judged once
   per resume, re-scoring after a filter change reuses it, and two users with the same resume share it.
 * **Never blocks alerts:** if the worker is offline, busy, over its hourly budget (`AI_MAX_CALLS_PER_HOUR`, 120) or
-  returns something invalid twice:
-  * the row is released with the keyword score and the tag "keyword match — Claude unavailable";
+  returns something invalid twice, or a row has waited `AI_WAIT_MAX_MINUTES` (90) behind the per-cycle cap:
+  * the keyword verdict decides: a keyword match goes out with the tag "keyword match — Claude unavailable",
+    a keyword reject stays rejected with its keyword reason;
   * no more calls are made for the rest of that cycle;
   * the review also runs during a LinkedIn cooldown.
 * **Health:**
@@ -210,8 +219,27 @@ Claude reads every job that passed the keyword hard filters above, the way a rec
   * the container is read-only with `/tmp` as tmpfs, runs as the host UID and publishes no port;
   * it only gets the Claude variables from `.env`, never the Telegram token;
   * nothing is logged except one line per request (no resume text).
-* **Login:** `jobhunter ai login` runs `claude setup-token` and stores `CLAUDE_CODE_OAUTH_TOKEN` in `.env`.
-  `ANTHROPIC_API_KEY` works too.
+* **Login** (`ai/server.py: auth_source`, first that exists):
+  1. **the host's own Claude Code login.** `docker-compose.yml` mounts `~/.claude` (or `CLAUDE_DIR`) at
+     `/claude-host`. At start `prepare_home()` links `$HOME/.claude` to it and gives Claude an empty
+     `$HOME/.claude.json` in the tmpfs, so the worker uses the same account and plan as `claude` on the server,
+     and the only thing it writes to the host folder is the shared token refresh;
+  2. `CLAUDE_CODE_OAUTH_TOKEN` in `.env`, from `jobhunter ai login` (`claude setup-token`);
+  3. `ANTHROPIC_API_KEY`.
+
+  `/health` reports `auth_source` (host / token / api_key). Claude's own settings files are still ignored
+  (`--setting-sources ""`), so a plugin or hook of the host never runs inside the worker.
+
+### 🤝 Referral messages to a named person (Claude)
+
+* The 🤝 Referral message button still gives the template messages from `app/referral.py`. For AI users it adds
+  **🤖 Personal message by Claude**.
+* Tapping it asks *who are you asking?* The user replies in one message, for example "Priya Sharma, Senior SDE
+  there, we were at DTU together", or "-" for a general one. `bot.clean_person` keeps one line, ≤ 200 characters.
+* The worker's `POST /referral` (no tools) gets the resume text, the years, the user's name, the person and the
+  job, with the person and the job inside `<person>` / `<job>` tags as data only.
+* It returns `{note, message, followup, subject}`. `ai.parse_referral` validates it, and `ai.fit_note` keeps the
+  connection note ≤ 200 characters, cut at a word. Nothing is cached (each person gets their own).
 
 ### 📝 Application form (Telegram Mini App) and ✍️ Prepare
 
@@ -228,6 +256,11 @@ Claude reads every job that passed the keyword hard filters above, the way a rec
   * lengths, email and phone patterns, https-only links, number ranges;
   * notice / yes-no enums, known sites and modes only;
   * consent is required for any site that isn't Off.
+* Fields: contact (name, email, phone, city, PIN code, date of birth), links, work (company, title, total and
+  relevant years, notice, current / expected CTC, relocation, sponsorship, preferred locations, work mode, work
+  authorisation), profile (headline, key skills, summary, languages), education (degree, college, year, CGPA,
+  class XII and X marks), gender and disability (both optional, "prefer not to say"), default answers.
+  `for_claude()` leaves out email, phone, PIN code, date of birth and disability.
 * Stored in `data/users/<id>/apply_profile.json` (0600) and deleted by `/deleteme`.
 * The page loads only Telegram's `telegram-web-app.js`, has no `fetch`, no storage and no backend. A test checks
   that its field names and site list match `apply_profile.py` and `apply_sites.py`.
@@ -241,6 +274,24 @@ max 25):
 | Greenhouse, Lever, Ashby (company career sites) | `public` | public application forms, no account |
 
 `site_for(url)` matches by host. It checks the exact host or a sub-domain, so `evilgreenhouse.io` doesn't match.
+
+**🔐 Signing in to the login sites** (`jobhunter connect <site> [user id]`, `scripts/connect_site.mjs`):
+* These sites have no sign-in for outside apps, so there is no token to request. The bot **never asks for a
+  password**: a password page of ours would be an account-takeover risk for every user, and automated logins trip
+  the sites' OTP / CAPTCHA checks anyway.
+* Instead, on the server's desktop, `jobhunter connect naukri` opens Google Chrome with a fresh throw-away profile
+  on the site's **real** login page (`SITES[k]["login_url"]`). The user logs in there themselves, OTP and
+  CAPTCHA included, then presses Enter in the terminal.
+* The script reads the cookies over Chrome's local DevTools port (`127.0.0.1` only), keeps **only that site's
+  cookies** (`hosts`), and saves them in Playwright *storage state* format to
+  `data/users/<id>/sessions/<site>.json` (dir 0700, file 0600, atomic). Then Chrome is closed and the temporary
+  profile deleted. With no site cookies, nothing is saved.
+* `storage.session_status()` reports only the date saved, the cookie count and the latest expiry (never values).
+  The form shows "🔐 Signed in (saved …)" or the `jobhunter connect <site>` command per site, and so does the
+  summary after saving. `jobhunter connections [id]` lists them; `jobhunter disconnect <site> [id]` deletes one;
+  `/deleteme` removes the whole folder.
+* The saved sign-in is for auto-apply (next phase): it will be loaded only into the apply browser, never sent to
+  Claude as text.
 
 **✍️ Prepare application** is a button on every job, for admins and AI-allowed users.
 * The worker's `POST /prepare` also runs with no tools. It gets the resume text, `ApplyProfile.for_claude()`
@@ -377,15 +428,17 @@ jobhunter update            git pull + rebuild                ← after pushing 
 jobhunter watchdog install  cron check every 10 min (restart + Telegram alert)
 jobhunter clean             free space: logs older than 12 h, old images, build cache
 jobhunter test | env | backup | shell
-jobhunter ai login          connect your Claude subscription (claude setup-token → .env), once
+jobhunter ai login          optional: a separate Claude token (default: this machine's own `claude` login)
 jobhunter ai status | test [id] | allow <id> | block <id> | logs
+jobhunter connect <site> [id]   sign in to naukri / indeed / wellfound / gfg / linkedin in Chrome, save the sign-in
+jobhunter connections [id] · jobhunter disconnect <site> [id]
 ```
 
 ---
 
 ## 10. Tests & quality gates
 
-`tests/` contains about 340 tests. They make no network calls: LinkedIn and Telegram are faked in `tests/fakes.py`, Claude by a `FakeAI` / MockTransport and, for the worker, a fake `claude` binary.
+`tests/` contains about 450 tests. They make no network calls: LinkedIn and Telegram are faked in `tests/fakes.py`, Claude by a `FakeAI` / MockTransport and, for the worker, a fake `claude` binary.
 
 | File | Covers |
 |---|---|
@@ -401,6 +454,7 @@ jobhunter ai status | test [id] | allow <id> | block <id> | logs
 | `test_ai.py` | verdict validation (clamp, reject malformed, trim), cache key, payload limits, HTTP client (retry once, no retry on 429/503/400, offline), scanner: ai_wait hold, Claude score, `ai_skip`, threshold, offline release + stop calling, shared cache, not-allowed users, per-cycle cap, no delivery while waiting, review during cooldown; alert/alive/filter UI, `/ai` admin, AI watchdog |
 | `test_ai_server.py` | worker command has no tools / no MCP / no settings, job text only on stdin inside `<job>`, empty API key dropped, parse + failure modes, timeout, hourly budget, HTTP API, compose isolation (no port, read-only, no Telegram token) |
 | `test_apply_form.py` | form validation (every rule), consent, profile storage 0600 + delete, site host matching, the page (sites/fields match Python, only Telegram's script, no backend), `#d=` URL round-trip, web_app keyboard, `/form` pre-fill from resume, saving / rejecting `web_app_data`, ✍️ Prepare (not allowed, kit + cache, failure, split messages), worker `/prepare` prompt |
+| `test_claude_first.py` | near-miss rule (which keyword rejects Claude reads, hard filters never), Claude rescues a keyword reject + alert tag, offline / AI-off / long-wait fallback to the keyword verdict, host-login detection + `prepare_home`, compose mount, referral: note fit, validation, client errors, payload, person cleaning, keyboard, full button → reply → Claude flow + failure, worker `/referral` prompt + endpoint, sign-ins: status without values, delete, path safety, removal with the user, login URLs on the site, admin `connect-info` / `connections` / `disconnect`, connect script (syntax, cookies of the site only, 0600), form status, new form fields |
 | `test_bot.py` | approval flow, admin-only, resume upload, filter buttons & text, job buttons, user isolation, delivery cap/quiet/pause/blocked, Clear chat, /deleteme, manual scan cooldown |
 
 **The tests run automatically:**

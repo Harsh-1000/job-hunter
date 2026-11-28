@@ -23,7 +23,8 @@ log = logging.getLogger(__name__)
 VERDICTS = ("strong", "good", "stretch", "skip")
 VERDICT_LABELS = {"strong": "Strong fit", "good": "Good fit", "stretch": "Stretch", "skip": "Not a fit"}
 MAX_TEXT = 12_000
-NO_LOGIN = "not logged in to Claude (run: jobhunter ai login)"
+NO_LOGIN = "not logged in to Claude (log in with `claude` on the server, or run: jobhunter ai login)"
+NOTE_LIMIT = 200
 
 
 @dataclass
@@ -131,12 +132,13 @@ class AIClient:
             log.info("AI judge attempt %s failed: %s", attempt, self.last_error)
         return None
 
-    async def prepare(self, body: dict) -> dict | None:
+    async def _post(self, path: str, body: dict, key: str):
+        """POST to the worker; returns the answer's `key` field, or None with last_error set."""
         if not self.enabled:
             self.last_error = "off"
             return None
         try:
-            r = await self.http.post("/prepare", json=body)
+            r = await self.http.post(path, json=body)
         except httpx.HTTPError as err:
             self.last_error = f"offline ({type(err).__name__})"
             return None
@@ -145,11 +147,23 @@ class AIClient:
                 "over hourly budget" if r.status_code == 429 else _err(r))
             return None
         try:
-            kit = parse_kit(r.json().get("kit"))
+            return r.json().get(key)
         except (ValueError, AttributeError):
-            kit = None
-        self.last_error = "" if kit else "invalid answer"
+            self.last_error = "invalid answer"
+            return None
+
+    async def prepare(self, body: dict) -> dict | None:
+        kit = parse_kit(await self._post("/prepare", body, "kit"))
+        if not kit and not self.last_error:
+            self.last_error = "invalid answer"
         return kit
+
+    async def referral(self, body: dict) -> dict | None:
+        """🤝 Claude-written referral messages to one named person."""
+        ref = parse_referral(await self._post("/referral", body, "referral"))
+        if not ref and not self.last_error:
+            self.last_error = "invalid answer"
+        return ref
 
     async def close(self) -> None:
         await self.http.aclose()
@@ -178,6 +192,38 @@ def parse_kit(d) -> dict | None:
         note = note[:199].rstrip() + "…"
     return {"cover_note": d["cover_note"].strip()[:1500], "answers": answers[:8], "highlights": highlights,
             "referral_note": note}
+
+
+def fit_note(note: str, limit: int = NOTE_LIMIT) -> str:
+    """LinkedIn connection notes are cut at 200 characters: shorten at a word, never mid-word."""
+    note = " ".join((note or "").split())
+    if len(note) <= limit:
+        return note
+    cut = note[:limit - 1]
+    cut = cut[:cut.rfind(" ")] if " " in cut else cut
+    return cut.rstrip(" ,;:") + "…"
+
+
+def parse_referral(d) -> dict | None:
+    """Validate Claude's referral messages: {note <= 200 chars, message, followup, subject}."""
+    if not isinstance(d, dict):
+        return None
+    out = {}
+    for k, n in (("note", 600), ("message", 1500), ("followup", 600), ("subject", 120)):
+        v = d.get(k)
+        if not isinstance(v, str) or not v.strip():
+            return None
+        out[k] = v.strip()[:n]
+    out["note"] = fit_note(out["note"])
+    out["subject"] = " ".join(out["subject"].split())
+    return out
+
+
+def referral_payload(row, resume_text: str, person: str, name: str, years: float | None) -> dict:
+    return {"resume": {"text": (resume_text or "")[:MAX_TEXT], "years": years}, "person": person[:200],
+            "name": name[:60],
+            "job": {k: (row[k] or "") for k in ("title", "company", "url")}
+            | {"id": row["job_id"], "description": (row["description"] or "")[:MAX_TEXT // 2]}}
 
 
 def prepare_payload(row, resume_text: str, profile: dict) -> dict:
@@ -209,5 +255,5 @@ def status() -> dict:
     elif not err:
         state = "ok"
     else:
-        state = "budget" if "budget" in err else ("nologin" if err == NO_LOGIN else "offline")
+        state = "budget" if "budget" in err else ("nologin" if "not logged in" in err else "offline")
     return {"enabled": True, "state": state, "error": err, "failing_since": since, "last_ok": ok}
