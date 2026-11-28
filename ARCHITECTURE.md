@@ -230,16 +230,18 @@ hard filters, the way a recruiter would, including the keyword "near misses" the
   `/health` reports `auth_source` (host / token / api_key). Claude's own settings files are still ignored
   (`--setting-sources ""`), so a plugin or hook of the host never runs inside the worker.
 
-### 🤝 Referral messages to a named person (Claude)
+### 🤝 Referral messages (written by Claude)
 
-* The 🤝 Referral message button still gives the template messages from `app/referral.py`. For AI users it adds
-  **🤖 Personal message by Claude**.
-* Tapping it asks *who are you asking?* The user replies in one message, for example "Priya Sharma, Senior SDE
-  there, we were at DTU together", or "-" for a general one. `bot.clean_person` keeps one line, ≤ 200 characters.
-* The worker's `POST /referral` (no tools) gets the resume text, the years, the user's name, the person and the
-  job, with the person and the job inside `<person>` / `<job>` tags as data only.
-* It returns `{note, message, followup, subject}`. `ai.parse_referral` validates it, and `ai.fit_note` keeps the
-  connection note ≤ 200 characters, cut at a word. Nothing is cached (each person gets their own).
+* For admins and AI-allowed users with a resume, **🤝 Referral message** asks Claude straight away. There's no
+  question first: the messages start "Hi [Name]," for the user to fill in.
+* The worker's `POST /referral` (no tools) gets the resume text, the years, the user's name and the job (inside
+  `<job>` tags, as data only). It returns `{note, message, followup, subject}`. `ai.parse_referral` validates it,
+  and `ai.fit_note` keeps the connection note ≤ 200 characters, cut at a word.
+* The answer comes with the same 🔎 People / Recruiters search buttons. A `user_data["referring"]` guard stops
+  double taps.
+* **Fallback:** if Claude is off for the user, offline or invalid, the template messages from `app/referral.py`
+  are sent (with a one-line note when Claude failed), so the button always answers.
+* The API also accepts an optional `person` ("Priya, SDE-2 there"), which the bot doesn't use for now.
 
 ### 📝 Application form (Telegram Mini App) and ✍️ Prepare
 
@@ -454,7 +456,7 @@ jobhunter connections [id] · jobhunter disconnect <site> [id]
 | `test_ai.py` | verdict validation (clamp, reject malformed, trim), cache key, payload limits, HTTP client (retry once, no retry on 429/503/400, offline), scanner: ai_wait hold, Claude score, `ai_skip`, threshold, offline release + stop calling, shared cache, not-allowed users, per-cycle cap, no delivery while waiting, review during cooldown; alert/alive/filter UI, `/ai` admin, AI watchdog |
 | `test_ai_server.py` | worker command has no tools / no MCP / no settings, job text only on stdin inside `<job>`, empty API key dropped, parse + failure modes, timeout, hourly budget, HTTP API, compose isolation (no port, read-only, no Telegram token) |
 | `test_apply_form.py` | form validation (every rule), consent, profile storage 0600 + delete, site host matching, the page (sites/fields match Python, only Telegram's script, no backend), `#d=` URL round-trip, web_app keyboard, `/form` pre-fill from resume, saving / rejecting `web_app_data`, ✍️ Prepare (not allowed, kit + cache, failure, split messages), worker `/prepare` prompt |
-| `test_claude_first.py` | near-miss rule (which keyword rejects Claude reads, hard filters never), Claude rescues a keyword reject + alert tag, offline / AI-off / long-wait fallback to the keyword verdict, host-login detection + `prepare_home`, compose mount, referral: note fit, validation, client errors, payload, person cleaning, keyboard, full button → reply → Claude flow + failure, worker `/referral` prompt + endpoint, sign-ins: status without values, delete, path safety, removal with the user, login URLs on the site, admin `connect-info` / `connections` / `disconnect`, connect script (syntax, cookies of the site only, 0600), form status, new form fields |
+| `test_claude_first.py` | near-miss rule (which keyword rejects Claude reads, hard filters never), Claude rescues a keyword reject + alert tag, offline / AI-off / long-wait fallback to the keyword verdict, host-login detection + `prepare_home`, compose mount, referral: note fit, validation, client errors, payload, button → Claude straight away (no question), template fallback when Claude fails or isn't allowed, worker `/referral` prompt + endpoint, sign-ins: status without values, delete, path safety, removal with the user, login URLs on the site, admin `connect-info` / `connections` / `disconnect`, connect script (syntax, cookies of the site only, 0600), form status, new form fields |
 | `test_bot.py` | approval flow, admin-only, resume upload, filter buttons & text, job buttons, user isolation, delivery cap/quiet/pause/blocked, Clear chat, /deleteme, manual scan cooldown |
 
 **The tests run automatically:**

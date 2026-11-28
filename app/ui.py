@@ -271,35 +271,24 @@ def referral_text(ref, title: str, company: str) -> str:
             "Be quick: referrals work best in the first days after a job is posted.")
 
 
-def referral_kb(ref, company: str, job_id: str = "") -> InlineKeyboardMarkup:
+def referral_kb(ref, company: str) -> InlineKeyboardMarkup:
     short = company[:22]
-    rows = [[B(f"🔎 People at {short}", url=ref.employees_url)],
-            [B(f"🔎 Recruiters at {short}", url=ref.recruiters_url)]]
-    if job_id:
-        rows.append([B("🤖 Personal message by Claude", callback_data=f"refai:{job_id}")])
-    return InlineKeyboardMarkup(rows)
+    return InlineKeyboardMarkup([[B(f"🔎 People at {short}", url=ref.employees_url)],
+                                 [B(f"🔎 Recruiters at {short}", url=ref.recruiters_url)]])
 
 
-REFERRAL_PERSON_PROMPT = (
-    "🤖 <b>Who are you asking for the referral?</b>\n\n"
-    "Send their name and anything that helps, in one message, for example:\n"
-    "<code>Priya Sharma, Senior SDE there, we were at DTU together</code>\n"
-    "<code>Rahul, recruiter, met at a meetup</code>\n"
-    "<code>Ankit</code>\n\n"
-    "Claude writes the note, message and follow-up to that person, from your resume and this job. "
-    "Send <code>-</code> for a general one.")
-
-
-def ai_referral_text(ref: dict, title: str, company: str, person: str) -> str:
-    who = f" to <b>{e(person)}</b>" if person else ""
-    return (f"🤖 <b>Referral messages by Claude</b>{who} — {e(title)} at {e(company)}\n"
-            "<i>Tap a grey box to copy it. Check it reads like you before sending.</i>\n\n"
+def ai_referral_text(ref: dict, title: str, company: str) -> str:
+    return (f"🤝 <b>Referral messages</b> — {e(title)} at {e(company)}\n"
+            "<i>Written by Claude from your resume and this job. Tap a grey box to copy it; replace [Name] with "
+            "the person's first name.</i>\n\n"
             f"<b>1️⃣ Connection request note</b> ({len(ref['note'])}/200 characters)\n"
             f"<pre>{e(ref['note'])}</pre>\n\n"
             "<b>2️⃣ Full message</b>: after they accept, or as a DM / email\n"
             f"<pre>{e(ref['message'])}</pre>\n\n"
             f"<b>✉️ Email subject</b>\n<pre>{e(ref['subject'])}</pre>\n\n"
-            f"<b>3️⃣ Follow-up</b>: if there's no reply in 4–5 days\n<pre>{e(ref['followup'])}</pre>")
+            f"<b>3️⃣ Follow-up</b>: if there's no reply in 4–5 days\n<pre>{e(ref['followup'])}</pre>\n\n"
+            "💡 <b>Who to ask:</b> 2–3 people in a similar role (they get referral bonuses), or a recruiter. "
+            "Be quick: referrals work best in the first days after a job is posted.")
 
 
 JOB_STATES = {"applied": "✅ <b>Applied</b>", "saved": "⭐ <b>Saved</b>", "hidden": "🙈 <i>Hidden</i>", "sent": ""}

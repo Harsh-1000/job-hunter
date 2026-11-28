@@ -5,7 +5,6 @@ import asyncio
 import html
 import json
 import logging
-import re
 import time
 from datetime import datetime, time as dtime, timedelta, timezone
 from functools import wraps
@@ -538,9 +537,6 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE, user) -> None:
     if not key:
         return await reply(update, ctx, "Use the menu below 👇, or send me your resume as a file.",
                            reply_markup=ui.MAIN_KB)
-    if key.startswith("refai:"):
-        ctx.user_data.pop("awaiting", None)
-        return await write_ai_referral(update, ctx, user, key.split(":", 1)[1], update.message.text)
     f, p = load(user["id"])
     try:
         msg = apply_text_setting(f, key, update.message.text)
@@ -597,60 +593,35 @@ async def on_referral_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE, use
     await q.answer("Writing your referral messages…")
     f, p = load(user["id"])
     name = (p.name if p and p.name else "") or _name_from_saved_resume(user["id"]) or (user["first_name"] or "")
+    years = f.years(p.years if p else None) if (p or f.my_years is not None) else None
     matched = json.loads(row["details"] or "{}").get("match", {}).get("matched", [])
-    ref = referral.build(row["title"], row["company"], job_id, row["url"], matched, p, name,
-                         f.years(p.years if p else None) if (p or f.my_years is not None) else None,
+    ref = referral.build(row["title"], row["company"], job_id, row["url"], matched, p, name, years,
                          fallback_role=f.keywords[0] if f.keywords else "")
-    await reply(update, ctx, ui.referral_text(ref, row["title"], row["company"]),
-                reply_markup=ui.referral_kb(ref, referral.clean_company(row["company"]),
-                                            job_id if ai_allowed(user) else ""))
-
-
-def clean_person(text: str) -> str:
-    """What the user typed about the referrer: one line, no control characters, at most 200 characters."""
-    t = " ".join(re.sub(r"[\x00-\x1f\x7f]", " ", text or "").split())[:200]
-    return "" if t in ("-", "–", "skip", "/skip") else t
-
-
-@active_only
-async def on_ai_referral_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE, user) -> None:
-    """🤖 Personal message by Claude: ask who the referral is for, then Claude writes to that person."""
-    q = update.callback_query
-    job_id = q.data.split(":", 1)[1]
-    if not db.get_delivery(user["id"], job_id):
-        return await q.answer("That job is no longer available.", show_alert=True)
-    if not ai_allowed(user):
-        return await q.answer("This uses Claude, which the admin hasn't turned on for you yet.", show_alert=True)
-    if not storage.resume_text(user["id"]):
-        return await q.answer("Send your resume first (as a file), so Claude can write in your words.",
-                              show_alert=True)
-    await q.answer()
-    ctx.user_data["awaiting"] = f"refai:{job_id}"
-    await reply(update, ctx, ui.REFERRAL_PERSON_PROMPT, reply_markup=ui.CANCEL_KB)
-
-
-async def write_ai_referral(update: Update, ctx: ContextTypes.DEFAULT_TYPE, user, job_id: str, text: str) -> None:
-    row = db.get_delivery(user["id"], job_id)
-    if not row:
-        return await reply(update, ctx, "That job is no longer available.", reply_markup=ui.MAIN_KB)
-    person = clean_person(text)
-    f, p = load(user["id"])
-    name = (p.name if p and p.name else "") or _name_from_saved_resume(user["id"]) or (user["first_name"] or "")
-    msg = await reply(update, ctx, f"🤖 Claude is writing to <b>{e(person or 'your contact')}</b>… (about 20–40 s)")
-    client = ai_mod.AIClient()
-    try:
-        ref = await client.referral(ai_mod.referral_payload(
-            row, storage.resume_text(user["id"]), person, name, f.years(p.years if p else None) if p else None))
-    finally:
-        await client.close()
-    try:
-        await msg.delete()
-    except TelegramError:
-        pass
-    if not ref:
-        return await reply(update, ctx, f"⚠️ Claude couldn't write it right now ({e(client.last_error or 'unavailable')})."
-                                        " The 🤝 template messages above still work.", reply_markup=ui.MAIN_KB)
-    await reply(update, ctx, ui.ai_referral_text(ref, row["title"], row["company"], person), reply_markup=ui.MAIN_KB)
+    kb = ui.referral_kb(ref, referral.clean_company(row["company"]))
+    note = ""
+    text = storage.resume_text(user["id"])
+    if ai_allowed(user) and text:   # Claude writes them straight away; the templates are the fallback
+        busy = ctx.user_data.setdefault("referring", set())
+        if job_id in busy:
+            return
+        busy.add(job_id)
+        msg = await reply(update, ctx, f"🤖 Claude is writing your referral messages for <b>{e(row['title'])}</b>… "
+                                       "(about 20–40 s)")
+        client = ai_mod.AIClient()
+        try:
+            ai_ref = await client.referral(ai_mod.referral_payload(row, text, "", name, years))
+        finally:
+            await client.close()
+            busy.discard(job_id)
+        try:
+            await msg.delete()
+        except TelegramError:
+            pass
+        if ai_ref:
+            return await reply(update, ctx, ui.ai_referral_text(ai_ref, row["title"], row["company"]), reply_markup=kb)
+        note = f"⚠️ <i>Claude couldn't write them right now ({e(client.last_error or 'unavailable')}), " \
+               "so here are the standard ones.</i>\n\n"
+    await reply(update, ctx, note + ui.referral_text(ref, row["title"], row["company"]), reply_markup=kb)
 
 
 @active_only
@@ -1214,7 +1185,6 @@ def build() -> Application:
     app.add_handler(CallbackQueryHandler(on_filter_button, pattern=r"^f:"))
     app.add_handler(CallbackQueryHandler(on_job_button, pattern=r"^j:"))
     app.add_handler(CallbackQueryHandler(on_referral_button, pattern=r"^ref:"))
-    app.add_handler(CallbackQueryHandler(on_ai_referral_button, pattern=r"^refai:"))
     app.add_handler(CallbackQueryHandler(on_prepare_button, pattern=r"^prep:", block=False))
     app.add_handler(CallbackQueryHandler(on_resume_button, pattern=r"^r:"))
     app.add_handler(CallbackQueryHandler(on_clear_button, pattern=r"^c:"))

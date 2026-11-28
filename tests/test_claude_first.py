@@ -173,20 +173,6 @@ def test_referral_payload_has_person_job_and_no_contact():
     assert "email" not in json.dumps(p) and p["name"] == "Asha"
 
 
-@pytest.mark.parametrize("text, out", [("  Priya   Sharma,\nSDE-2 ", "Priya Sharma, SDE-2"), ("-", ""),
-                                       ("skip", ""), ("a\x00b", "a b"), ("x" * 500, "x" * 200)])
-def test_clean_person(text, out):
-    assert bot.clean_person(text) == out
-
-
-def test_referral_keyboard_offers_claude_only_with_job():
-    from app import referral
-    ref = referral.build("AI Engineer", "Acme", "1", "https://x", [], None, "A", None)
-    datas = lambda kb: [b.callback_data for r in kb.inline_keyboard for b in r]  # noqa: E731
-    assert "refai:1" in datas(ui.referral_kb(ref, "Acme", "1"))
-    assert all(not (d or "").startswith("refai") for d in datas(ui.referral_kb(ref, "Acme")))
-
-
 class RefClient:
     bodies: list = []
 
@@ -201,42 +187,47 @@ class RefClient:
         pass
 
 
-def test_ai_referral_flow(ai_on, monkeypatch):
+def test_referral_button_uses_claude_straight_away(ai_on, monkeypatch):
     with_resume(1)
     db.update_user(1, is_admin=1)
     job_for(1)
     monkeypatch.setattr(bot.ai_mod, "AIClient", RefClient)
     RefClient.bodies = []
-    b, ctx = FakeBot(), None
+    b = FakeBot()
     ctx = make_ctx(b)
-    run(bot.on_ai_referral_button(make_update(uid=1, data="refai:1"), ctx))
-    assert ctx.user_data["awaiting"] == "refai:1" and "Who are you asking" in b.sent[-1].text
-    run(bot.on_text(make_update(uid=1, text="Priya Sharma, Senior SDE, college senior"), ctx))
+    run(bot.on_referral_button(make_update(uid=1, data="ref:1"), ctx))
+    assert len(RefClient.bodies) == 1 and RefClient.bodies[0]["person"] == ""   # no "who is it for?" question
     assert "awaiting" not in ctx.user_data
-    assert RefClient.bodies[0]["person"] == "Priya Sharma, Senior SDE, college senior"
-    out = b.sent[-1].text
-    assert "Referral messages by Claude" in out and "Priya Sharma" in out and REF["subject"] in out
+    out = b.sent[-1]
+    assert "Written by Claude" in out.text and REF["subject"] in out.text and "[Name]" in out.text
+    assert any("People at" in x.text for r in out.kw["reply_markup"].inline_keyboard for x in r)
     b.sent[-2].delete.assert_called_once()                   # the "writing…" message is removed
 
 
-def test_ai_referral_failure_and_not_allowed(ai_on, monkeypatch):
+def test_referral_falls_back_to_templates_when_claude_fails(ai_on, monkeypatch):
     with_resume(1)
+    db.update_user(1, is_admin=1)
     job_for(1)
-    upd = make_update(uid=1, data="refai:1")
-    run(bot.on_ai_referral_button(upd, make_ctx()))
-    assert "hasn't turned on" in upd.callback_query.answer.call_args.args[0]
 
     class Down(RefClient):
         async def referral(self, body):
             self.last_error = "offline (ConnectError)"
             return None
-    db.update_user(1, is_admin=1)
     monkeypatch.setattr(bot.ai_mod, "AIClient", Down)
     b = FakeBot()
-    ctx = make_ctx(b)
-    ctx.user_data["awaiting"] = "refai:1"
-    run(bot.on_text(make_update(uid=1, text="Rahul"), ctx))
-    assert "couldn't write it" in b.sent[-1].text and "offline" in b.sent[-1].text
+    run(bot.on_referral_button(make_update(uid=1, data="ref:1"), make_ctx(b)))
+    t = b.sent[-1].text
+    assert "couldn't write them" in t and "offline" in t and "Connection request note" in t
+
+
+def test_referral_without_ai_uses_templates_and_no_call(ai_on, monkeypatch):
+    with_resume(1)                     # not admin, not AI-allowed
+    job_for(1)
+    RefClient.bodies = []
+    monkeypatch.setattr(bot.ai_mod, "AIClient", RefClient)
+    b = FakeBot()
+    run(bot.on_referral_button(make_update(uid=1, data="ref:1"), make_ctx(b)))
+    assert not RefClient.bodies and "Connection request note" in b.sent[-1].text and "Claude" not in b.sent[-1].text
 
 
 # ---------------- worker: host login + /referral ----------------
@@ -272,6 +263,11 @@ def test_prepare_home_without_host_login(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "HOST_CLAUDE", str(tmp_path / "missing"))
     server.prepare_home(str(tmp_path / "home"))
     assert not (tmp_path / "home" / ".claude").exists() and (tmp_path / "home" / ".claude.json").exists()
+
+
+def test_referral_prompt_without_person_writes_to_name_placeholder():
+    p = server.referral_prompt({"resume": {"text": "CV"}, "job": {"title": "AI Eng", "id": "7"}})
+    assert "write to [Name]" in p and '"Hi [Name],"' in server.REF_RULES
 
 
 def test_referral_prompt_wraps_untrusted_parts():
