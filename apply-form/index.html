@@ -1,0 +1,281 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<title>Application form · Job Hunter</title>
+<!--
+  Telegram Mini App opened from the Job Hunter bot (📝 Application form).
+  Privacy: your current answers arrive in the URL #hash, which browsers never send to any server, and
+  "Save" hands the form back to the bot through Telegram (Telegram.WebApp.sendData). This page has no
+  backend, stores nothing, and loads nothing except Telegram's own Mini App script.
+-->
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root {
+    --bg: var(--tg-theme-bg-color, #ffffff);
+    --bg2: var(--tg-theme-secondary-bg-color, #f2f3f5);
+    --text: var(--tg-theme-text-color, #16181d);
+    --hint: var(--tg-theme-hint-color, #6b7280);
+    --accent: var(--tg-theme-button-color, #2481cc);
+    --accent-text: var(--tg-theme-button-text-color, #ffffff);
+    --danger: #d93025;
+    --line: color-mix(in srgb, var(--hint) 28%, transparent);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: var(--tg-theme-bg-color, #17212b); --bg2: var(--tg-theme-secondary-bg-color, #0e1621);
+      --text: var(--tg-theme-text-color, #f5f5f5); --hint: var(--tg-theme-hint-color, #8b9aa7);
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg2); color: var(--text);
+         font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 640px; margin: 0 auto; padding: 12px 16px 96px; }
+  h1 { font-size: 20px; margin: 6px 0 2px; }
+  .sub { color: var(--hint); margin: 0 0 14px; font-size: 13px; }
+  section { background: var(--bg); border-radius: 12px; padding: 14px 14px 6px; margin-bottom: 12px; }
+  h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .04em; color: var(--hint); margin: 0 0 10px; }
+  label { display: block; font-size: 13px; color: var(--hint); margin-bottom: 10px; }
+  input, select, textarea { display: block; width: 100%; margin-top: 4px; padding: 10px 11px; font: inherit;
+         color: var(--text); background: var(--bg2); border: 1px solid var(--line); border-radius: 9px; }
+  textarea { min-height: 76px; resize: vertical; }
+  input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: 0; }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  @media (max-width: 380px) { .row { grid-template-columns: 1fr; } }
+  .site { border-top: 1px solid var(--line); padding: 10px 0; }
+  .site:first-of-type { border-top: 0; }
+  .site-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .site-name { font-weight: 600; }
+  .tag { font-size: 11px; padding: 1px 7px; border-radius: 99px; background: var(--bg2); color: var(--hint);
+         margin-left: 6px; font-weight: 500; }
+  .note { font-size: 12px; color: var(--hint); margin-top: 4px; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }
+  .seg button { font: inherit; font-size: 13px; border: 0; background: transparent; color: var(--text);
+                padding: 6px 11px; cursor: pointer; }
+  .seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-text); }
+  .warn { font-size: 12px; color: var(--danger); margin-top: 4px; display: none; }
+  .check { display: flex; gap: 10px; align-items: flex-start; color: var(--text); font-size: 14px; }
+  .check input { width: auto; margin-top: 3px; }
+  #errors { color: var(--danger); font-size: 14px; white-space: pre-line; margin: 6px 0 12px; }
+  #save { width: 100%; padding: 13px; font: inherit; font-weight: 600; border: 0; border-radius: 10px;
+          background: var(--accent); color: var(--accent-text); cursor: pointer; }
+  #outside { display: none; background: #fff4e5; color: #7a4b00; padding: 10px 12px; border-radius: 10px;
+             margin-bottom: 12px; font-size: 14px; }
+  .count { float: right; font-size: 11px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>📝 Application form</h1>
+  <p class="sub">Fill this once. Claude uses it to write your answers and, only on the sites you switch on, to fill job forms for you.</p>
+  <div id="outside">Open this page from the Job Hunter bot (📝 Application form) so it can save your answers.</div>
+
+  <form id="f" novalidate autocomplete="on">
+  <section>
+    <h2>About you</h2>
+    <label>Full name<input name="full_name" maxlength="60" autocomplete="name" required></label>
+    <div class="row">
+      <label>Email<input name="email" type="email" maxlength="120" autocomplete="email" required></label>
+      <label>Phone<input name="phone" type="tel" maxlength="20" autocomplete="tel" placeholder="+91 98xxxxxxxx" required></label>
+    </div>
+    <label>City you live in<input name="city" maxlength="60" placeholder="New Delhi" required></label>
+    <label>LinkedIn profile<input name="linkedin" type="url" maxlength="150" placeholder="https://www.linkedin.com/in/…"></label>
+    <div class="row">
+      <label>GitHub<input name="github" type="url" maxlength="150" placeholder="https://github.com/…"></label>
+      <label>Portfolio / website<input name="portfolio" type="url" maxlength="150" placeholder="https://…"></label>
+    </div>
+  </section>
+
+  <section>
+    <h2>Work &amp; pay</h2>
+    <div class="row">
+      <label>Current company<input name="current_company" maxlength="80"></label>
+      <label>Current title<input name="current_title" maxlength="80"></label>
+    </div>
+    <div class="row">
+      <label>Total experience (years)<input name="total_years" type="number" step="0.1" min="0" max="40" inputmode="decimal" required></label>
+      <label>Notice period
+        <select name="notice"><option value="immediate">Immediate</option><option value="15">15 days</option>
+          <option value="30">30 days</option><option value="60">60 days</option><option value="90">90 days</option></select></label>
+    </div>
+    <div class="row">
+      <label>Current CTC (LPA)<input name="current_ctc_lpa" type="number" step="0.1" min="0" max="500" inputmode="decimal"></label>
+      <label>Expected CTC (LPA)<input name="expected_ctc_lpa" type="number" step="0.1" min="0" max="500" inputmode="decimal"></label>
+    </div>
+    <div class="row">
+      <label>Open to relocate?<select name="relocate"><option value="yes">Yes</option><option value="no">No</option></select></label>
+      <label>Need visa sponsorship?<select name="sponsorship"><option value="no">No</option><option value="yes">Yes</option></select></label>
+    </div>
+    <label>Preferred locations<input name="preferred_locations" maxlength="120" placeholder="Delhi NCR, Remote"></label>
+    <label>Work authorisation<input name="work_auth" maxlength="80" placeholder="Indian citizen"></label>
+  </section>
+
+  <section>
+    <h2>Education</h2>
+    <label>Degree<input name="degree" maxlength="80" placeholder="B.Tech Computer Science"></label>
+    <label>College / university<input name="college" maxlength="120"></label>
+    <div class="row">
+      <label>Graduation year<input name="grad_year" type="number" min="1970" max="2035" inputmode="numeric"></label>
+      <label>CGPA / %<input name="cgpa" maxlength="12" placeholder="8.2/10"></label>
+    </div>
+    <label>Gender (only if a form requires it)
+      <select name="gender"><option value="">Prefer not to say</option><option>Male</option><option>Female</option><option>Non-binary</option></select></label>
+  </section>
+
+  <section>
+    <h2>Your answers</h2>
+    <label>“Why do you want to join us?” (default answer, Claude tailors it per job)<span class="count" data-for="why_default"></span>
+      <textarea name="why_default" maxlength="400"></textarea></label>
+    <label>Short cover note (optional; Claude writes one per job if empty)<span class="count" data-for="cover_note"></span>
+      <textarea name="cover_note" maxlength="600"></textarea></label>
+  </section>
+
+  <section>
+    <h2>🤖 Auto-apply: which sites</h2>
+    <p class="note" style="margin-top:-4px">
+      <b>Off</b>: never. <b>Ask me</b>: Claude fills the form, the bot shows you a screenshot, and it submits only after you tap ✅.
+      <b>Auto</b>: Claude submits by itself, up to your daily limit.
+      If a CAPTCHA, login page or block appears, Claude stops and sends you the link to finish yourself.</p>
+    <div id="sites"></div>
+    <label style="margin-top:8px">Daily limit (applications per day, all sites)
+      <input name="daily_cap" type="number" min="1" max="25" value="10" inputmode="numeric"></label>
+    <label class="check"><input type="checkbox" name="consent">
+      <span>I allow Claude to fill in, and on sites set to <b>Auto</b> submit, job applications for me using the details above.</span></label>
+  </section>
+  </form>
+
+  <div id="errors" role="alert"></div>
+  <button id="save" type="button">💾 Save</button>
+</main>
+
+<script>
+(function () {
+  "use strict";
+  // keep in sync with app/apply_sites.py (a test checks the keys match)
+  var SITES = [
+    ["linkedin", "LinkedIn Easy Apply", "login", "Needs your LinkedIn login. LinkedIn restricts accounts that automate applying."],
+    ["naukri", "Naukri", "login", "Needs your Naukri login. Naukri uses CAPTCHAs; when one appears you finish by hand."],
+    ["indeed", "Indeed", "login", "Needs your Indeed login. Indeed blocks most automated browsers, so expect many “finish here” links."],
+    ["wellfound", "Wellfound", "login", "Needs your Wellfound login. Applying is a short note to the startup."],
+    ["gfg", "GeeksforGeeks Jobs", "login", "Needs your GFG login. External-link jobs go to the company site."],
+    ["greenhouse", "Greenhouse (company sites)", "public", "Public company application forms, no account needed."],
+    ["lever", "Lever (company sites)", "public", "Public company application forms, no account needed."],
+    ["ashby", "Ashby (company sites)", "public", "Public company application forms, no account needed."]
+  ];
+  var MODES = [["off", "Off"], ["ask", "Ask me"], ["auto", "Auto"]];
+  var MAX_BYTES = 4096;
+  var tg = window.Telegram && window.Telegram.WebApp;
+  // Opened from a keyboard button, initData is empty by design; platform tells us we're inside Telegram.
+  var inTg = !!(tg && tg.platform && tg.platform !== "unknown");
+  var form = document.getElementById("f");
+  var modes = {};
+
+  function decodeHash() {
+    var m = /[#&]d=([^&]+)/.exec(location.hash || "");
+    if (!m) return {};
+    try {
+      var b64 = m[1].replace(/-/g, "+").replace(/_/g, "/");
+      while (b64.length % 4) b64 += "=";
+      var bin = atob(b64), bytes = new Uint8Array(bin.length);
+      for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      return JSON.parse(new TextDecoder().decode(bytes)) || {};
+    } catch (err) { return {}; }
+  }
+
+  function renderSites(current) {
+    var box = document.getElementById("sites");
+    SITES.forEach(function (s) {
+      var key = s[0];
+      modes[key] = (current && current[key]) || "off";
+      var wrap = document.createElement("div"); wrap.className = "site";
+      var head = document.createElement("div"); head.className = "site-head";
+      var name = document.createElement("span"); name.className = "site-name"; name.textContent = s[1];
+      var tag = document.createElement("span"); tag.className = "tag"; tag.textContent = s[2] === "login" ? "your login" : "no account";
+      name.appendChild(tag);
+      var seg = document.createElement("div"); seg.className = "seg"; seg.setAttribute("role", "group");
+      seg.setAttribute("aria-label", s[1] + " mode");
+      var warn = document.createElement("div"); warn.className = "warn";
+      warn.textContent = "⚠️ Auto on a login site can get that account restricted. “Ask me” is safer.";
+      MODES.forEach(function (m) {
+        var b = document.createElement("button"); b.type = "button"; b.textContent = m[1];
+        b.setAttribute("aria-pressed", String(modes[key] === m[0]));
+        b.addEventListener("click", function () {
+          modes[key] = m[0];
+          seg.querySelectorAll("button").forEach(function (x) { x.setAttribute("aria-pressed", String(x === b)); });
+          warn.style.display = (s[2] === "login" && m[0] === "auto") ? "block" : "none";
+          if (tg && tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
+        });
+        seg.appendChild(b);
+      });
+      warn.style.display = (s[2] === "login" && modes[key] === "auto") ? "block" : "none";
+      head.appendChild(name); head.appendChild(seg);
+      var note = document.createElement("div"); note.className = "note"; note.textContent = s[3];
+      wrap.appendChild(head); wrap.appendChild(note); wrap.appendChild(warn);
+      box.appendChild(wrap);
+    });
+  }
+
+  function fill(d) {
+    Array.prototype.forEach.call(form.elements, function (el) {
+      if (!el.name || !(el.name in d) || d[el.name] === null) return;
+      if (el.type === "checkbox") el.checked = d[el.name] === true;
+      else el.value = String(d[el.name]);
+    });
+  }
+
+  function collect() {
+    var out = {};
+    Array.prototype.forEach.call(form.elements, function (el) {
+      if (!el.name) return;
+      out[el.name] = el.type === "checkbox" ? el.checked : el.value.trim();
+    });
+    out.sites = modes;
+    return out;
+  }
+
+  function check(d) {
+    var errs = [];
+    if (!d.full_name) errs.push("Full name is needed.");
+    if (!/^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$/.test(d.email)) errs.push("Email doesn't look right.");
+    if (!/^\+?[0-9][0-9 ()-]{6,18}[0-9]$/.test(d.phone)) errs.push("Phone doesn't look right.");
+    if (!d.city) errs.push("City is needed.");
+    if (d.total_years === "") errs.push("Total experience is needed.");
+    ["linkedin", "github", "portfolio"].forEach(function (k) {
+      if (d[k] && !/^https:\/\/\S+\.\S+$/.test(d[k])) errs.push(k + " must be a full https:// link.");
+    });
+    var anyOn = Object.keys(modes).some(function (k) { return modes[k] !== "off"; });
+    if (anyOn && !d.consent) errs.push("Tick the consent box to turn on auto-apply.");
+    return errs;
+  }
+
+  function save() {
+    var d = collect(), errs = check(d), box = document.getElementById("errors");
+    var json = JSON.stringify(d);
+    if (new TextEncoder().encode(json).length > MAX_BYTES) errs.push("Too much text: shorten your answers a little.");
+    box.textContent = errs.join("\n");
+    if (errs.length) { if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("error"); return; }
+    if (!inTg) { box.textContent = "Open this from the bot to save."; return; }
+    tg.sendData(json);   // Telegram closes the page and gives the data to the bot
+  }
+
+  document.querySelectorAll(".count").forEach(function (c) {
+    var ta = form.elements[c.getAttribute("data-for")];
+    var upd = function () { c.textContent = ta.value.length + "/" + ta.maxLength; };
+    ta.addEventListener("input", upd); setTimeout(upd, 0);
+  });
+
+  var data = decodeHash();
+  renderSites(data.sites);
+  fill(data);
+  document.getElementById("save").addEventListener("click", save);
+  if (tg) {
+    tg.ready(); tg.expand();
+    if (tg.MainButton) { tg.MainButton.setText("💾 Save"); tg.MainButton.onClick(save); tg.MainButton.show(); }
+  }
+  if (!inTg) document.getElementById("outside").style.display = "block";
+})();
+</script>
+</body>
+</html>
