@@ -4,6 +4,7 @@
         resume.pdf | resume.docx | resume.txt   the file the user sent (latest only)
         resume.txt.extracted                    plain text pulled out of it
         profile.json                            skills / years / keywords parsed from it
+        apply_profile.json                      the 📝 Application form (contact, CTC, notice, auto-apply sites)
 
 The folder name is the numeric Telegram user ID (Telegram guarantees it is unique and it never
 changes), so a user can only ever touch their own folder. Folders are created 0700 and files
@@ -56,6 +57,21 @@ def resume_file(user_id: int) -> Path | None:
         if p.exists():
             return p
     return None
+
+
+def save_apply_profile(user_id: int, data: dict) -> Path:
+    d = user_dir(user_id, create=True)
+    path = d / "apply_profile.json"
+    _write(path, json.dumps(data, indent=2).encode())
+    return path
+
+
+def load_apply_profile(user_id: int) -> dict | None:
+    p = user_dir(user_id) / "apply_profile.json"
+    try:
+        return json.loads(p.read_text()) if p.exists() else None
+    except (OSError, ValueError):
+        return None
 
 
 def resume_text(user_id: int) -> str:

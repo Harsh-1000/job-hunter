@@ -1,12 +1,13 @@
 """Everything the user sees: message texts and keyboards (no Telegram I/O here, so it's easy to test)."""
 from __future__ import annotations
 
+import base64
 import html
 import json
 from collections import Counter
 
 from telegram import InlineKeyboardButton as B
-from telegram import InlineKeyboardMarkup, ReplyKeyboardMarkup
+from telegram import InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, WebAppInfo
 
 from .filters import EXPERIENCE_LEVELS, JOB_TYPES, POSTED, WORK_TYPES, Filters, summary
 from .resume import ResumeProfile
@@ -18,10 +19,12 @@ BTN_SCAN, BTN_FILTERS, BTN_RESUME, BTN_STATUS = "🔍 Find jobs now", "⚙️ Fi
 BTN_SAVED, BTN_INSIGHTS, BTN_PAUSE, BTN_CLEAR, BTN_HELP = ("⭐ Saved", "💡 Insights", "⏯ Pause / Resume",
                                                            "🧹 Clear chat", "❓ Help")
 BTN_ALIVE = "🟢 Is it working?"
-MENU_BUTTONS = [BTN_ALIVE, BTN_SCAN, BTN_FILTERS, BTN_RESUME, BTN_STATUS, BTN_SAVED, BTN_INSIGHTS, BTN_PAUSE,
+BTN_FORM = "📝 Application form"
+BTN_BACK = "⬅️ Back to menu"
+MENU_BUTTONS = [BTN_ALIVE, BTN_FORM, BTN_SCAN, BTN_FILTERS, BTN_RESUME, BTN_STATUS, BTN_SAVED, BTN_INSIGHTS, BTN_PAUSE,
                 BTN_CLEAR, BTN_HELP]
 MAIN_KB = ReplyKeyboardMarkup(
-    [[BTN_ALIVE], [BTN_SCAN, BTN_FILTERS], [BTN_RESUME, BTN_STATUS], [BTN_SAVED, BTN_INSIGHTS],
+    [[BTN_ALIVE, BTN_FORM], [BTN_SCAN, BTN_FILTERS], [BTN_RESUME, BTN_STATUS], [BTN_SAVED, BTN_INSIGHTS],
      [BTN_PAUSE, BTN_CLEAR, BTN_HELP]],
     resize_keyboard=True, is_persistent=True)
 
@@ -47,6 +50,7 @@ I watch LinkedIn for new jobs that fit <b>your</b> resume and send them the mome
 /resume – your resume · /saved – saved & applied
 /insights – skills you're missing most
 /alive – 🟢 is it working? (is the bot hunting for me right now)
+/form – 📝 application form (fill once; choose auto-apply sites)
 🤖 Claude judges the fit when your admin allowed it (⚙️ Filters → 🤖 to switch off)
 /status – stats · /pause – pause or resume alerts
 /clear – clear this chat · /deleteme – delete all your data
@@ -116,6 +120,8 @@ INTRO_PAGES: list[tuple[str, str]] = [
      "The same role posted in several cities is sent only once."),
     ("🧭 The menu buttons",
      "🟢 <b>Is it working?</b>: proof I'm hunting for you right now: last scan, next scan, today's numbers\n"
+     "📝 <b>Application form</b>: fill once (contact, notice, CTC, education) + choose the sites Claude may "
+     "apply on for you\n"
      "🔍 <b>Find jobs now</b>: search right away (otherwise automatic every few minutes)\n"
      "⚙️ <b>Filters</b>: everything you can tune\n"
      "📄 <b>My resume</b>: what I read from it, suggested keywords\n"
@@ -219,8 +225,35 @@ def job_kb(row, state: str = "") -> InlineKeyboardMarkup:
                      B("🙈 Hide", callback_data=f"j:hidden:{jid}")])
     else:
         rows.append([B("↩️ Undo", callback_data=f"j:sent:{jid}")])
-    rows.append([B("🤝 Referral message", callback_data=f"ref:{jid}")])
+    rows.append([B("🤝 Referral message", callback_data=f"ref:{jid}"),
+                 B("✍️ Prepare application", callback_data=f"prep:{jid}")])
     return InlineKeyboardMarkup(rows)
+
+
+def prep_messages(kit: dict, title: str, company: str, missing: list[str], limit: int = 3800) -> list[str]:
+    """The ✍️ Prepare kit as one or more messages (Telegram max ~4096 chars; blocks are never split)."""
+    blocks = [f"✍️ <b>Application kit</b> — {e(title)} at {e(company)}\n"
+              "<i>Written by Claude from your resume and 📝 form. Tap a grey box to copy it.</i>",
+              f"<b>📄 Cover note</b>\n<pre>{e(kit['cover_note'])}</pre>"]
+    if kit.get("answers"):
+        blocks.append("<b>❓ Likely questions</b>")
+        blocks += [f"<b>{e(a['question'])}</b>\n<pre>{e(a['answer'])}</pre>" for a in kit["answers"]]
+    if kit.get("highlights"):
+        blocks.append("<b>⭐ Stress these from your resume</b>\n" + "\n".join(f"• {e(h)}" for h in kit["highlights"]))
+    if kit.get("referral_note"):
+        blocks.append(f"<b>🤝 Referral note</b> ({len(kit['referral_note'])}/200)\n<pre>{e(kit['referral_note'])}</pre>")
+    if missing:
+        blocks.append(f"⚠️ Your 📝 form is missing {e(', '.join(missing))}: some answers may say “Open to discussion”.")
+    out, cur = [], ""
+    for blk in blocks:
+        if cur and len(cur) + 2 + len(blk) > limit:
+            out.append(cur)
+            cur = blk
+        else:
+            cur = f"{cur}\n\n{blk}" if cur else blk
+    if cur:
+        out.append(cur)
+    return out
 
 
 def referral_text(ref, title: str, company: str) -> str:
@@ -471,6 +504,53 @@ def daily_report_text(name: str, w: dict, cycles: dict, interval: float) -> str:
     if not w["sent"]:
         lines.append("\n<i>Quiet day? Add job titles or widen 🕒 Date posted in ⚙️ Filters.</i>")
     lines.append("\n<i>Turn this report off in ⚙️ Filters → 🌅 Daily report.</i>")
+    return "\n".join(lines)
+
+
+# ---------- 📝 application form (Telegram Mini App) ----------
+
+def form_url(base: str, data: dict) -> str:
+    """The form page with the current answers in the #hash (never sent to any server)."""
+    raw = json.dumps(data, separators=(",", ":"), ensure_ascii=False).encode()
+    return base.split("#")[0] + "#d=" + base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+def form_kb(url: str) -> ReplyKeyboardMarkup:
+    # Only a reply-keyboard Mini App button can send data back (Telegram.WebApp.sendData).
+    return ReplyKeyboardMarkup([[KeyboardButton("📝 Open my application form", web_app=WebAppInfo(url=url))],
+                                [BTN_BACK]], resize_keyboard=True, one_time_keyboard=True)
+
+
+def form_intro_text(saved: bool) -> str:
+    return ("<b>📝 Application form</b>\n"
+            + ("Your saved answers are filled in, so change what you like and tap <b>Save</b>.\n"
+               if saved else "Fill it <b>once</b>: I've pre-filled what I could read from your resume.\n")
+            + "It holds what job forms usually ask (contact, notice period, CTC, education) and "
+              "<b>which sites Claude may apply on for you</b> (Off / Ask me / Auto).\n\n"
+              "👇 Tap the button below the message box to open it.\n"
+              "<i>Private: the page runs inside Telegram, and your answers come straight back to this bot.</i>")
+
+
+def apply_profile_text(p, login_sites: list[str]) -> str:
+    from .apply_sites import MODE_LABELS, SITES
+    lines = ["✅ <b>Application form saved</b>",
+             f"👤 {e(p.full_name)} · {e(p.city)} · {p.total_years if p.total_years is not None else '?'} yrs · "
+             f"notice {e(p.notice if p.notice == 'immediate' else p.notice + ' days')}"]
+    if p.expected_ctc_lpa is not None:
+        lines.append(f"💰 Expected {p.expected_ctc_lpa:g} LPA" + (f" (current {p.current_ctc_lpa:g})"
+                                                                 if p.current_ctc_lpa is not None else ""))
+    active = p.active_sites()
+    if active:
+        lines.append("\n🤖 <b>Auto-apply on:</b>")
+        lines += [f"  • {e(SITES[k]['label'])}: <b>{MODE_LABELS[m]}</b>" for k, m in active.items()]
+        lines.append(f"  Daily limit: {p.daily_cap}")
+        if login_sites:
+            lines.append("\n🔑 These need your own login once: " + e(", ".join(SITES[k]["label"] for k in login_sites))
+                         + ". The one-time login is done on the server by the admin.")
+    else:
+        lines.append("\n🤖 Auto-apply: off for every site (you can still use ✍️ Prepare on any job).")
+    if p.missing():
+        lines.append("\n⚠️ Still missing: " + e(", ".join(p.missing())))
     return "\n".join(lines)
 
 

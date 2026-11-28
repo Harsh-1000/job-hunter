@@ -17,7 +17,9 @@ from telegram.ext import (Application, CallbackQueryHandler, CommandHandler, Con
                           TypeHandler, filters)
 
 from . import ai as ai_mod
+from . import apply_profile as ap
 from . import db, referral, storage, ui
+from .apply_sites import SITES
 from .config import settings
 from .filters import (MAX_KEYWORDS, MAX_LOCATIONS, POSTED, SENIOR_WORDS, Filters, location_label,
                       normalize_location, parse_applicants, parse_list,
@@ -594,6 +596,56 @@ async def on_referral_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE, use
                 reply_markup=ui.referral_kb(ref, referral.clean_company(row["company"])))
 
 
+@active_only
+async def on_prepare_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE, user) -> None:
+    """✍️ Prepare application: Claude writes a cover note + screening answers for this job (cached)."""
+    q = update.callback_query
+    job_id = q.data.split(":", 1)[1]
+    row = db.get_delivery(user["id"], job_id)
+    if not row:
+        return await q.answer("That job is no longer available.", show_alert=True)
+    if not ai_allowed(user):
+        return await q.answer("✍️ Prepare uses Claude, which the admin hasn't turned on for you yet. "
+                              "Use 🤝 Referral message meanwhile.", show_alert=True)
+    if not storage.resume_text(user["id"]):
+        return await q.answer("Send your resume first (as a file), so Claude can write in your words.",
+                              show_alert=True)
+    prof = ap.ApplyProfile.from_dict(storage.load_apply_profile(user["id"]))
+    missing = prof.missing() if prof else ["the whole 📝 Application form"]
+    kit = db.get_prepared(user["id"], job_id)
+    if not kit:
+        busy = ctx.user_data.setdefault("preparing", set())
+        if job_id in busy:
+            return await q.answer("Already writing this one…")
+        busy.add(job_id)
+        await q.answer("Claude is writing your application…")
+        msg = await reply(update, ctx, f"✍️ Claude is writing your application for <b>{e(row['title'])}</b>… "
+                                       "(about 30–60 s)")
+        client = ai_mod.AIClient()
+        try:
+            kit = await client.prepare(ai_mod.prepare_payload(row, storage.resume_text(user["id"]),
+                                                              prof.for_claude() if prof else {}))
+        finally:
+            await client.close()
+            busy.discard(job_id)
+        if not kit:
+            why = client.last_error or "unavailable"
+            return await msg.edit_text(f"⚠️ Claude couldn't write it right now ({e(why)}). Try again in a few "
+                                       "minutes, or use 🤝 Referral message.", parse_mode=ParseMode.HTML)
+        db.put_prepared(user["id"], job_id, kit)
+        try:
+            await msg.delete()
+        except TelegramError:
+            pass
+    else:
+        await q.answer()
+    for text in ui.prep_messages(kit, row["title"], row["company"], missing):
+        await reply(update, ctx, text)
+    if not prof:
+        await reply(update, ctx, "💡 Fill the 📝 Application form once and the answers use your real notice period, "
+                                 "CTC and details.", reply_markup=ui.MAIN_KB)
+
+
 def _name_from_saved_resume(user_id: int) -> str:
     """Resumes uploaded before names were parsed: read it from the saved text."""
     path = storage.user_dir(user_id) / "resume.txt.extracted"
@@ -666,6 +718,50 @@ async def cmd_deleteme(update: Update, ctx: ContextTypes.DEFAULT_TYPE, user) -> 
                                           "Send /start to begin again.")
     await reply(update, ctx, "⚠️ This deletes your resume, filters and job history.\n"
                              "Send <code>/deleteme confirm</code> to continue.")
+
+
+# =============== 📝 application form (Telegram Mini App) ===============
+
+def form_data(user_id: int) -> tuple[dict, bool]:
+    """(answers to pre-fill the form with, already saved?)"""
+    saved = ap.ApplyProfile.from_dict(storage.load_apply_profile(user_id))
+    if saved:
+        return saved.to_dict(), True
+    _, prof = load(user_id)
+    text = storage.resume_text(user_id)
+    guess = ap.guess_from_resume(text, (prof.name if prof else "") or find_name(text), prof.years if prof else None)
+    return guess.to_dict(), False
+
+
+@active_only
+async def cmd_form(update: Update, ctx: ContextTypes.DEFAULT_TYPE, user) -> None:
+    data, saved = form_data(user["id"])
+    await reply(update, ctx, ui.form_intro_text(saved), reply_markup=ui.form_kb(ui.form_url(settings.form_url, data)))
+
+
+@active_only
+async def on_web_app_data(update: Update, ctx: ContextTypes.DEFAULT_TYPE, user) -> None:
+    raw = update.effective_message.web_app_data.data or ""
+    if len(raw.encode()) > ap.MAX_FORM_BYTES:
+        return await reply(update, ctx, "⚠️ That form was too large. Shorten your answers and save again.",
+                           reply_markup=ui.MAIN_KB)
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        data = None
+    prof, errors = ap.from_form(data)
+    if errors:
+        url = ui.form_url(settings.form_url, data if isinstance(data, dict) else form_data(user["id"])[0])
+        return await reply(update, ctx, "⚠️ <b>Not saved</b>, please fix:\n" + "\n".join(f"• {e(x)}" for x in errors),
+                           reply_markup=ui.form_kb(url))
+    storage.save_apply_profile(user["id"], prof.to_dict())
+    login = [k for k in prof.active_sites() if SITES[k]["kind"] == "login"]
+    log.info("user %s saved the application form (%d auto-apply sites)", user["id"], len(prof.active_sites()))
+    await reply(update, ctx, ui.apply_profile_text(prof, login), reply_markup=ui.MAIN_KB)
+
+
+async def on_back_to_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    await reply(update, ctx, "Menu 👇", reply_markup=ui.MAIN_KB)
 
 
 # =============== clear chat ===============
@@ -981,6 +1077,7 @@ async def on_error(update: object, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
 COMMANDS = [
     ("alive", "🟢 Is it working? Am I being hunted for?"),
+    ("form", "📝 Application form (fill once, choose auto-apply sites)"),
     ("scan", "🔍 Search LinkedIn now"), ("filters", "⚙️ All filters"), ("resume", "📄 Your resume"),
     ("titles", "🔎 Add / remove job titles"), ("addtitle", "➕ Add job titles"), ("location", "📍 Set locations"), ("threshold", "🎯 Min match %"),
     ("years", "👤 Your years of experience"), ("saved", "⭐ Saved & applied jobs"),
@@ -1041,10 +1138,14 @@ def build() -> Application:
     app.add_handler(CommandHandler("approve", cmd_approve, filters=private))
     app.add_handler(CommandHandler("block", cmd_block, filters=private))
     app.add_handler(CommandHandler("ai", cmd_ai, filters=private))
+    app.add_handler(CommandHandler(["form", "apply_form", "details"], cmd_form, filters=private))
+    app.add_handler(MessageHandler(private & filters.StatusUpdate.WEB_APP_DATA, on_web_app_data))
+    app.add_handler(MessageHandler(private & filters.Text([ui.BTN_BACK]), on_back_to_menu))
 
     buttons = {ui.BTN_SCAN: cmd_scan, ui.BTN_FILTERS: cmd_filters, ui.BTN_RESUME: cmd_resume,
                ui.BTN_STATUS: cmd_status, ui.BTN_SAVED: cmd_saved, ui.BTN_INSIGHTS: cmd_insights,
-               ui.BTN_PAUSE: cmd_pause, ui.BTN_CLEAR: cmd_clear, ui.BTN_HELP: cmd_help, ui.BTN_ALIVE: cmd_alive}
+               ui.BTN_PAUSE: cmd_pause, ui.BTN_CLEAR: cmd_clear, ui.BTN_HELP: cmd_help, ui.BTN_ALIVE: cmd_alive,
+               ui.BTN_FORM: cmd_form}
     for label, fn in buttons.items():
         app.add_handler(MessageHandler(private & filters.Text([label]), fn, block=label != ui.BTN_SCAN))
 
@@ -1053,6 +1154,7 @@ def build() -> Application:
     app.add_handler(CallbackQueryHandler(on_filter_button, pattern=r"^f:"))
     app.add_handler(CallbackQueryHandler(on_job_button, pattern=r"^j:"))
     app.add_handler(CallbackQueryHandler(on_referral_button, pattern=r"^ref:"))
+    app.add_handler(CallbackQueryHandler(on_prepare_button, pattern=r"^prep:", block=False))
     app.add_handler(CallbackQueryHandler(on_resume_button, pattern=r"^r:"))
     app.add_handler(CallbackQueryHandler(on_clear_button, pattern=r"^c:"))
     app.add_handler(CallbackQueryHandler(on_admin_button, pattern=r"^a:"))

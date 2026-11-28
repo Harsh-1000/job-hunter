@@ -55,6 +55,8 @@ class Settings:
     ai_url: str = os.getenv("AI_URL", "").strip().rstrip("/")
     ai_max_per_cycle: int = max(0, _int("AI_MAX_PER_CYCLE", 20))
     ai_timeout_s: float = _float("AI_TIMEOUT_SECONDS", 100)
+    # 📝 Application form: the static Mini App page (GitHub Pages of this repo, folder docs/apply-form)
+    form_url: str = os.getenv("FORM_URL", "https://harsh-1000.github.io/job-hunter/apply-form/").strip()
 
     @property
     def db_path(self) -> Path:

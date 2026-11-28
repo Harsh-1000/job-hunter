@@ -58,6 +58,9 @@
 | `app/storage.py` | `data/users/<telegram_id>/` folders |
 | `app/referral.py` | Job-specific referral request messages (template-based) + LinkedIn people-search links |
 | `app/admin.py` | `python -m app.admin users / approve / block / make-admin / stats / reset-cooldown / ai-*` |
+| `app/apply_profile.py` | 📝 form data: `ApplyProfile`, strict `from_form()`, `guess_from_resume()`, `for_claude()` |
+| `app/apply_sites.py` | Known apply sites (login / public), modes, `site_for(url)` |
+| `docs/apply-form/index.html` | The Telegram Mini App form (static, GitHub Pages) |
 | `app/ai.py` | Claude judge client: `AIClient.judge()`, strict `parse_verdict()`, cache key, AI health status |
 | `ai/server.py` | The Claude worker (own container): `GET /health`, `POST /judge` → `claude -p` with tools disabled |
 | `ai/Dockerfile` | `node:22-slim` + Python 3 + pinned `@anthropic-ai/claude-code` |
@@ -210,6 +213,43 @@ Claude reads every job that passed the keyword hard filters above, the way a rec
 * **Login:** `jobhunter ai login` runs `claude setup-token` and stores `CLAUDE_CODE_OAUTH_TOKEN` in `.env`.
   `ANTHROPIC_API_KEY` works too.
 
+### 📝 Application form (Telegram Mini App) and ✍️ Prepare
+
+**The form.**
+* It's a static page, `docs/apply-form/index.html`, published by GitHub Pages
+  (`FORM_URL`, default `https://harsh-1000.github.io/job-hunter/apply-form/`).
+* `/form` or the menu button 📝 Application form sends a **reply-keyboard** `web_app` button. Only that kind of
+  button can send data back to the bot.
+* Pre-fill: the current answers are sent in the URL **`#d=<base64url JSON>`**. Browsers never send the hash
+  to a server, so GitHub only serves the empty page. The first time, the answers are guessed from the resume
+  (`apply_profile.guess_from_resume`: name, email, phone, LinkedIn/GitHub links, years).
+* **Save** calls `Telegram.WebApp.sendData(json)`, which is at most 4096 bytes and is checked in the page and
+  in the bot. The bot receives `web_app_data`, and `apply_profile.from_form()` validates it strictly:
+  * lengths, email and phone patterns, https-only links, number ranges;
+  * notice / yes-no enums, known sites and modes only;
+  * consent is required for any site that isn't Off.
+* Stored in `data/users/<id>/apply_profile.json` (0600) and deleted by `/deleteme`.
+* The page loads only Telegram's `telegram-web-app.js`, has no `fetch`, no storage and no backend. A test checks
+  that its field names and site list match `apply_profile.py` and `apply_sites.py`.
+
+**Sites** (`app/apply_sites.py`), each set to Off / Ask me / Auto in the form, plus a daily limit (default 10,
+max 25):
+
+| Site | Kind | Notes |
+|---|---|---|
+| LinkedIn Easy Apply, Naukri, Indeed, Wellfound, GFG Jobs | `login` | the user's own account; CAPTCHAs / Cloudflare stop Claude and the user gets a "finish here" link |
+| Greenhouse, Lever, Ashby (company career sites) | `public` | public application forms, no account |
+
+`site_for(url)` matches by host. It checks the exact host or a sub-domain, so `evilgreenhouse.io` doesn't match.
+
+**✍️ Prepare application** is a button on every job, for admins and AI-allowed users.
+* The worker's `POST /prepare` also runs with no tools. It gets the resume text, `ApplyProfile.for_claude()`
+  (which leaves out email and phone) and the job.
+* It returns `{cover_note, answers[{question, answer}], highlights[3], referral_note ≤ 200}`, validated by
+  `ai.parse_kit`.
+* The kit is cached in `ai_prepared(user_id, job_id)`.
+* `ui.prep_messages` splits it into messages of ≤ 3800 characters and never splits a copy block.
+
 ## 6. Resume handling & the per-user folder
 
 **Parsing** (`app/resume.py`, all local, nothing is sent anywhere):
@@ -249,6 +289,7 @@ data/users/<telegram_user_id>/      0700
 | `meta` | `key` | cooldown, last cycle summary, `alert_open` (watchdog) |
 | `cycles` | — | one row per scheduled scan: ts, searches, listings, new_jobs, matched, error (kept 2 days) |
 | `ai_verdicts` | (`job_id`, `phash`) | Claude's verdict JSON per job + resume hash (kept 30 days) |
+| `ai_prepared` | (`user_id`, `job_id`) | ✍️ Prepare kit JSON (kept 30 days, deleted with the user) |
 
 **Pruning** (every 12 h): deliveries older than 30 days are removed, except applied and saved ones. So are unreferenced jobs older than 30 days, search history older than 35 days, and message IDs older than 3 days.
 
@@ -359,6 +400,7 @@ jobhunter ai status | test [id] | allow <id> | block <id> | logs
 | `test_health.py` | health verdicts, `/alive` (healthy / down / slow / cooldown / blockers / restart), cycles table + pruning, user_window, in-bot watchdog (alert once, recover), daily report + toggle, **watchdog.sh run against fake docker/curl** (restart, single alert, recovery, frozen bot, admins from DB) |
 | `test_ai.py` | verdict validation (clamp, reject malformed, trim), cache key, payload limits, HTTP client (retry once, no retry on 429/503/400, offline), scanner: ai_wait hold, Claude score, `ai_skip`, threshold, offline release + stop calling, shared cache, not-allowed users, per-cycle cap, no delivery while waiting, review during cooldown; alert/alive/filter UI, `/ai` admin, AI watchdog |
 | `test_ai_server.py` | worker command has no tools / no MCP / no settings, job text only on stdin inside `<job>`, empty API key dropped, parse + failure modes, timeout, hourly budget, HTTP API, compose isolation (no port, read-only, no Telegram token) |
+| `test_apply_form.py` | form validation (every rule), consent, profile storage 0600 + delete, site host matching, the page (sites/fields match Python, only Telegram's script, no backend), `#d=` URL round-trip, web_app keyboard, `/form` pre-fill from resume, saving / rejecting `web_app_data`, ✍️ Prepare (not allowed, kit + cache, failure, split messages), worker `/prepare` prompt |
 | `test_bot.py` | approval flow, admin-only, resume upload, filter buttons & text, job buttons, user isolation, delivery cap/quiet/pause/blocked, Clear chat, /deleteme, manual scan cooldown |
 
 **The tests run automatically:**

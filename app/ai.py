@@ -131,6 +131,26 @@ class AIClient:
             log.info("AI judge attempt %s failed: %s", attempt, self.last_error)
         return None
 
+    async def prepare(self, body: dict) -> dict | None:
+        if not self.enabled:
+            self.last_error = "off"
+            return None
+        try:
+            r = await self.http.post("/prepare", json=body)
+        except httpx.HTTPError as err:
+            self.last_error = f"offline ({type(err).__name__})"
+            return None
+        if r.status_code != 200:
+            self.last_error = NO_LOGIN if (r.status_code == 503 and "login" in _err(r)) else (
+                "over hourly budget" if r.status_code == 429 else _err(r))
+            return None
+        try:
+            kit = parse_kit(r.json().get("kit"))
+        except (ValueError, AttributeError):
+            kit = None
+        self.last_error = "" if kit else "invalid answer"
+        return kit
+
     async def close(self) -> None:
         await self.http.aclose()
 
@@ -140,6 +160,30 @@ def _err(r: httpx.Response) -> str:
         return f"HTTP {r.status_code}: {r.json().get('error', '')}"[:200]
     except ValueError:
         return f"HTTP {r.status_code}"
+
+
+def parse_kit(d) -> dict | None:
+    """Validate a ✍️ Prepare kit: {cover_note, answers[{question, answer}], highlights[3], referral_note}."""
+    if not isinstance(d, dict) or not isinstance(d.get("cover_note"), str) or not d["cover_note"].strip():
+        return None
+    answers = []
+    for a in d.get("answers") or []:
+        if isinstance(a, dict) and isinstance(a.get("question"), str) and isinstance(a.get("answer"), str) \
+                and a["question"].strip() and a["answer"].strip():
+            answers.append({"question": a["question"].strip()[:200], "answer": a["answer"].strip()[:900]})
+    highlights = [h.strip()[:200] for h in d.get("highlights") or [] if isinstance(h, str) and h.strip()][:3]
+    note = d.get("referral_note") if isinstance(d.get("referral_note"), str) else ""
+    note = " ".join(note.split())
+    if len(note) > 200:
+        note = note[:199].rstrip() + "…"
+    return {"cover_note": d["cover_note"].strip()[:1500], "answers": answers[:8], "highlights": highlights,
+            "referral_note": note}
+
+
+def prepare_payload(row, resume_text: str, profile: dict) -> dict:
+    return {"resume": {"text": (resume_text or "")[:MAX_TEXT]}, "profile": profile,
+            "job": {k: (row[k] or "") for k in ("title", "company", "location")}
+            | {"description": (row["description"] or "")[:MAX_TEXT]}}
 
 
 # ---------------- status (for "Is it working?" and the watchdog) ----------------

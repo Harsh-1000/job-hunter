@@ -7,6 +7,7 @@ query_state when each search last ran
 user_queries which searches each user has been attached to (to backfill a search others already ran)
 deliveries  one row per (user, job): waiting -> [ai_wait] -> pending -> sent -> applied/saved/hidden, or rejected
 ai_verdicts Claude's verdict per (job, resume hash): each job is judged once per resume
+ai_prepared ✍️ Prepare kits (cover note, screening answers) per (user, job)
 messages    message IDs in each chat, so "Clear chat" can delete them
 cycles      one row per scheduled scan cycle (for "Is it working?", the watchdog and the daily report)
 """
@@ -65,6 +66,10 @@ CREATE TABLE IF NOT EXISTS cycles (
     ts TEXT NOT NULL, searches INTEGER, listings INTEGER, new_jobs INTEGER, matched INTEGER, error TEXT
 );
 CREATE INDEX IF NOT EXISTS cycles_ts ON cycles(ts);
+CREATE TABLE IF NOT EXISTS ai_prepared (
+    user_id INTEGER NOT NULL, job_id TEXT NOT NULL, kit TEXT NOT NULL, ts TEXT NOT NULL,
+    PRIMARY KEY (user_id, job_id)
+);
 CREATE TABLE IF NOT EXISTS ai_verdicts (
     job_id TEXT NOT NULL, phash TEXT NOT NULL, verdict TEXT NOT NULL, ts TEXT NOT NULL,
     PRIMARY KEY (job_id, phash)
@@ -189,6 +194,7 @@ def delete_user(user_id: int) -> None:
         row = c.execute("SELECT chat_id FROM users WHERE id=?", (user_id,)).fetchone()
         c.execute("DELETE FROM deliveries WHERE user_id=?", (user_id,))
         c.execute("DELETE FROM user_queries WHERE user_id=?", (user_id,))
+        c.execute("DELETE FROM ai_prepared WHERE user_id=?", (user_id,))
         c.execute("DELETE FROM users WHERE id=?", (user_id,))
         if row:
             c.execute("DELETE FROM messages WHERE chat_id=?", (row["chat_id"],))
@@ -369,6 +375,7 @@ def prune(job_days: int = 30, seen_days: int = 35) -> None:
         c.execute("DELETE FROM messages WHERE ts < ?", (iso(now() - timedelta(days=3)),))
         c.execute("DELETE FROM cycles WHERE ts < ?", (iso(now() - timedelta(days=2)),))
         c.execute("DELETE FROM ai_verdicts WHERE ts < ?", (cut,))
+        c.execute("DELETE FROM ai_prepared WHERE ts < ?", (cut,))
 
 
 # ---------------- Claude verdicts ----------------
@@ -383,6 +390,18 @@ def put_ai_verdict(job_id: str, phash: str, verdict: dict) -> None:
     with conn() as c:
         c.execute("INSERT OR REPLACE INTO ai_verdicts (job_id, phash, verdict, ts) VALUES (?,?,?,?)",
                   (job_id, phash, json.dumps(verdict), iso()))
+
+
+def get_prepared(user_id: int, job_id: str) -> dict | None:
+    with conn() as c:
+        r = c.execute("SELECT kit FROM ai_prepared WHERE user_id=? AND job_id=?", (user_id, job_id)).fetchone()
+    return json.loads(r["kit"]) if r else None
+
+
+def put_prepared(user_id: int, job_id: str, kit: dict) -> None:
+    with conn() as c:
+        c.execute("INSERT OR REPLACE INTO ai_prepared (user_id, job_id, kit, ts) VALUES (?,?,?,?)",
+                  (user_id, job_id, json.dumps(kit), iso()))
 
 
 def ai_calls_since(hours: float) -> int:
