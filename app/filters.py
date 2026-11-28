@@ -79,6 +79,7 @@ class Filters:
     quiet_start: int | None = None         # hour 0-23, None = no quiet hours
     quiet_end: int | None = None
     daily_report: bool = True              # 9:00 "still hunting" summary of the last 24 h
+    ai_judge: bool = True                  # let Claude judge the fit (when the admin allowed AI for you)
 
     # ---- (de)serialisation ----
     def to_json(self) -> str:
@@ -223,4 +224,5 @@ def summary(f: Filters, resume_years: float | None = None) -> str:
         f"👥 Max applicants: {f.max_applicants or 'Any'}",
         f"🌙 Quiet hours: {quiet}",
         f"🌅 Daily report (9:00): {'On' if f.daily_report else 'Off'}",
+        f"🤖 Claude judges the fit: {'On' if f.ai_judge else 'Off'}",
     ])

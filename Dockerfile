@@ -17,6 +17,7 @@ COPY requirements-dev.txt .
 RUN pip install -r requirements-dev.txt
 COPY app ./app
 COPY tests ./tests
+COPY ai/server.py ./ai/server.py
 COPY main.py ./
 RUN python -m pytest -q -p no:cacheprovider && touch /tmp/tests-passed
 

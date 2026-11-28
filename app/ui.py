@@ -47,6 +47,7 @@ I watch LinkedIn for new jobs that fit <b>your</b> resume and send them the mome
 /resume – your resume · /saved – saved & applied
 /insights – skills you're missing most
 /alive – 🟢 is it working? (is the bot hunting for me right now)
+🤖 Claude judges the fit when your admin allowed it (⚙️ Filters → 🤖 to switch off)
 /status – stats · /pause – pause or resume alerts
 /clear – clear this chat · /deleteme – delete all your data
 /intro – 📖 guided tour of every feature"""
@@ -98,7 +99,10 @@ INTRO_PAGES: list[tuple[str, str]] = [
      "• <b>15%</b>: whether your experience fits what they ask\n\n"
      "Set a <b>threshold</b> to get only good matches, e.g. <code>/threshold 40</code> sends only jobs ≥ 40%.\n"
      "Default is <b>0</b>: you get every relevant job.\n\n"
-     "I skip jobs that ask for far more years than you have, and fresher-only roles."),
+     "I skip jobs that ask for far more years than you have, and fresher-only roles.\n\n"
+     "🤖 <b>Claude judge</b> (when the admin turned it on for you): jobs that pass these checks are also read "
+     "by Claude, like a recruiter would. You then see <b>Claude's %</b>, a one-line <i>why</i> and what's "
+     "missing, and jobs Claude calls “not a fit” are skipped. Switch it off in ⚙️ Filters → 🤖."),
     ("📬 Step 4: Job alerts",
      "Each alert shows the title, company, location, when it was posted, applicants, experience asked, "
      "your <b>match %</b>, the skills <b>you have</b> and the skills <b>they also want</b>.\n\n"
@@ -153,6 +157,7 @@ def intro_kb(page: int) -> InlineKeyboardMarkup:
 
 
 TOUR_KB = InlineKeyboardMarkup([[B("📖 Take the tour", callback_data="i:0")]])
+AI_LABELS = {"strong": "Strong fit", "good": "Good fit", "stretch": "Stretch", "skip": "Not a fit"}
 
 
 # ---------- job alert ----------
@@ -175,15 +180,22 @@ def job_text(row, state: str = "") -> str:
     elif ea == 0:
         lines.append("🌐 Applies on the company's website")
     score = row["score"]
+    ai = d.get("ai")
     if score is None:
         lines.append("🎯 Match: <i>send your resume to see a match %</i>")
     else:
         bar = "🟩" * round(score / 20) + "⬜" * (5 - round(score / 20))
-        lines.append(f"🎯 <b>Match {score}%</b> {bar}")
+        if ai:
+            lines.append(f"🤖 <b>Claude: {score}% · {e(AI_LABELS.get(ai.get('verdict'), ''))}</b> {bar}")
+            lines.append(f"💬 <i>{e(ai.get('why', ''))}</i>")
+        else:
+            lines.append(f"🎯 <b>Match {score}%</b> {bar}"
+                         + (" <i>(keyword match — Claude unavailable)</i>" if d.get("ai_offline") else ""))
         if m.get("matched"):
             lines.append(f"✅ You have: {e(', '.join(m['matched'][:8]))}")
-        if m.get("missing"):
-            lines.append(f"📚 They also want: {e(', '.join(m['missing'][:6]))}")
+        missing = (ai or {}).get("missing") or m.get("missing")
+        if missing:
+            lines.append(f"📚 They also want: {e(', '.join(missing[:6]))}")
     if d.get("keyword"):
         lines.append(f"🔎 <i>via “{e(d['keyword'])}”</i>")
     if state:
@@ -250,6 +262,7 @@ def filters_kb(f: Filters) -> InlineKeyboardMarkup:
         [B("🚫 Skip title words", callback_data="f:excl"), B("🏢 Skip companies", callback_data="f:comp")],
         [B("🌙 Quiet hours", callback_data="f:quiet"),
          B(f"🌅 Daily report: {'ON' if f.daily_report else 'off'}", callback_data="f:daily")],
+        [B(f"🤖 Claude judges the fit: {'ON' if f.ai_judge else 'off'}", callback_data="f:ai")],
         [B("♻️ Reset", callback_data="f:reset"), B("✅ Done", callback_data="f:done")],
     ])
 
@@ -399,6 +412,11 @@ VERDICTS = {
 }
 
 
+AI_STATES = {"ok": "✅ working", "offline": "⚠️ offline (keyword match is used meanwhile)",
+             "budget": "🐢 hourly limit reached (keyword match until it resets)", "unknown": "⏳ not used yet",
+             "nologin": "🔑 not connected to Claude yet (keyword match is used)"}
+
+
 def alive_text(s: dict) -> tuple[str, InlineKeyboardMarkup | None]:
     """s: verdict, last (dict|None), last_age, next_in, cooldown, error, interval, today, uptime_h, paused,
     keywords, locations, posted, easy_apply, has_resume."""
@@ -431,6 +449,10 @@ def alive_text(s: dict) -> tuple[str, InlineKeyboardMarkup | None]:
         lines.append(f"🔎 Searching: {e(', '.join(s['keywords']))}")
         lines.append(f"📍 {e(', '.join(s['locations']))} · 🕒 {e(s['posted'])}"
                      + (" · ⚡ Easy Apply only" if s["easy_apply"] else ""))
+    ai = s.get("ai")
+    if ai and ai.get("enabled"):
+        lines.append("🤖 Claude judge: " + AI_STATES.get(ai["state"], ai["state"])
+                     + (f" — {e(ai['error'])}" if ai.get("error") else ""))
     lines.append(f"🖥 Bot running for {s['uptime_h']}")
     if s["verdict"] == "ok" and not t["sent"]:
         lines.append("\n<i>No jobs yet today? That's normal: I only send fresh jobs that match your filters. "

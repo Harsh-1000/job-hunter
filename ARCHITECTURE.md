@@ -33,8 +33,13 @@
                 │  app/filters.py    per-user Filters + LinkedIn Query (URL params, shared key)           │
                 │  app/db.py         SQLite (WAL)          app/storage.py  per-user resume folders        │
                 │  app/admin.py      CLI used by the `jobhunter` command                                  │
-                └───────────────────────────── ./data (volume) ───────────────────────────────────────────┘
+                │  app/ai.py         client for the Claude worker ───────────────┐                         │
+                └───────────────────────────── ./data (volume) ──────────────│────────────────────────────┘
                                                    jobhunter.db · users/<id>/ · logs/ · heartbeat
+                ┌──── Docker container "job-hunter-ai" (internal network only, no published port) ─┐
+                │  ai/server.py  stdlib HTTP server  →  `claude -p` (Claude Code CLI, headless,     │
+                │                Sonnet 5.5, ALL tools off, JSON schema)  →  Claude (your plan)     │
+                └───────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 | File | Responsibility |
@@ -52,7 +57,10 @@
 | `app/db.py` | SQLite schema + queries |
 | `app/storage.py` | `data/users/<telegram_id>/` folders |
 | `app/referral.py` | Job-specific referral request messages (template-based) + LinkedIn people-search links |
-| `app/admin.py` | `python -m app.admin users / approve / block / make-admin / stats / reset-cooldown` |
+| `app/admin.py` | `python -m app.admin users / approve / block / make-admin / stats / reset-cooldown / ai-*` |
+| `app/ai.py` | Claude judge client: `AIClient.judge()`, strict `parse_verdict()`, cache key, AI health status |
+| `ai/server.py` | The Claude worker (own container): `GET /health`, `POST /judge` → `claude -p` with tools disabled |
+| `ai/Dockerfile` | `node:22-slim` + Python 3 + pinned `@anthropic-ai/claude-code` |
 
 ---
 
@@ -159,6 +167,49 @@ Required years come from the description. It recognises "2-4 years", "3+ yrs", "
 
 ---
 
+### 🤖 Claude judge (`app/ai.py`, `ai/server.py`)
+
+Claude reads every job that passed the keyword hard filters above, the way a recruiter would.
+
+* **Who gets it:**
+  * admins, plus users an admin allows with `/ai allow <id>` or `jobhunter ai allow <id>`. It spends the owner's
+    Claude plan, so it's not on for everyone;
+  * the user must have a resume and must not have switched it off (`Filters.ai_judge`, ⚙️ Filters → 🤖);
+  * the server needs `AI_URL`, which `docker-compose.yml` sets to `http://ai:8787`, plus a Claude login in
+    `.env`.
+* **Flow:**
+  * `scanner.judge(hold=True)` puts a keyword match in **`ai_wait`** instead of `pending`, so it isn't sent
+    before Claude has seen it;
+  * step 3 of the cycle (`Scanner.ai_review`) sends each `ai_wait` row to the worker. That's at most
+    `AI_MAX_PER_CYCLE` (20) new calls per cycle; the rest wait for the next cycle.
+* **Verdict:** `{score 0-100, verdict strong|good|stretch|skip, why, missing_skills, seniority_ok}`, strictly
+  validated by `parse_verdict`.
+  * `skip` → rejected with code **`ai_skip`**;
+  * a score below the user's threshold → `threshold`;
+  * otherwise `pending`, with Claude's score replacing the keyword score. The alert shows `🤖 Claude: 82% ·
+    Strong fit` plus the *why*.
+* **Cache:** `ai_verdicts(job_id, phash)`, where `phash` = sha1(resume text, targets, years). A job is judged once
+  per resume, re-scoring after a filter change reuses it, and two users with the same resume share it.
+* **Never blocks alerts:** if the worker is offline, busy, over its hourly budget (`AI_MAX_CALLS_PER_HOUR`, 120) or
+  returns something invalid twice:
+  * the row is released with the keyword score and the tag "keyword match — Claude unavailable";
+  * no more calls are made for the rest of that cycle;
+  * the review also runs during a LinkedIn cooldown.
+* **Health:**
+  * the state is kept in meta keys `ai_last_ok`, `ai_last_error` and `ai_failing_since`;
+  * 🟢 Is it working? shows a 🤖 line;
+  * the admin watchdog alerts after 30 min offline (budget limits don't count);
+  * `/ai` (admin) shows the worker, the login, calls used this hour and who has AI.
+* **Safety:**
+  * the worker runs `claude -p --tools "" --strict-mcp-config --setting-sources "" --no-session-persistence
+    --json-schema …`, so it has no tools at all;
+  * the job text is sent on stdin, inside `<job>` tags, and the system prompt says to treat it as data only;
+  * the container is read-only with `/tmp` as tmpfs, runs as the host UID and publishes no port;
+  * it only gets the Claude variables from `.env`, never the Telegram token;
+  * nothing is logged except one line per request (no resume text).
+* **Login:** `jobhunter ai login` runs `claude setup-token` and stores `CLAUDE_CODE_OAUTH_TOKEN` in `.env`.
+  `ANTHROPIC_API_KEY` works too.
+
 ## 6. Resume handling & the per-user folder
 
 **Parsing** (`app/resume.py`, all local, nothing is sent anywhere):
@@ -188,15 +239,16 @@ data/users/<telegram_user_id>/      0700
 
 | Table | Key | What |
 |---|---|---|
-| `users` | `id` (Telegram user ID) | chat_id, name, `status` pending/active/blocked, `is_admin`, `filters` JSON, `resume` JSON, `paused`, `last_manual_scan` |
+| `users` | `id` (Telegram user ID) | chat_id, name, `status` pending/active/blocked, `is_admin`, `ai_allowed`, `filters` JSON, `resume` JSON, `paused`, `last_manual_scan` |
 | `jobs` | `id` (LinkedIn job ID) | title, company, location, url, posted, `posted_at` (UTC, from "x min ago"), description, criteria, applicants, seniority, `detail_status` none/ok/failed |
 | `query_seen` | (`qkey`, `job_id`) | which jobs each search has returned (for paging) |
 | `query_state` | `qkey` | last run, run count |
 | `user_queries` | (`user_id`, `qkey`) | searches a user is attached to (for back-fill) |
-| `deliveries` | (`user_id`, `job_id`) | `status` waiting → pending → sent → applied/saved/hidden, or rejected · `score`, `reason`, `reason_code`, `details` JSON (match breakdown), `message_id` |
+| `deliveries` | (`user_id`, `job_id`) | `status` waiting → [ai_wait] → pending → sent → applied/saved/hidden, or rejected · `score`, `reason`, `reason_code`, `details` JSON (match breakdown), `message_id` |
 | `messages` | (`chat_id`, `message_id`) | every message in each chat with `kind` ui/job/user, for Clear chat |
 | `meta` | `key` | cooldown, last cycle summary, `alert_open` (watchdog) |
 | `cycles` | — | one row per scheduled scan: ts, searches, listings, new_jobs, matched, error (kept 2 days) |
+| `ai_verdicts` | (`job_id`, `phash`) | Claude's verdict JSON per job + resume hash (kept 30 days) |
 
 **Pruning** (every 12 h): deliveries older than 30 days are removed, except applied and saved ones. So are unreferenced jobs older than 30 days, search history older than 35 days, and message IDs older than 3 days.
 
@@ -284,13 +336,15 @@ jobhunter update            git pull + rebuild                ← after pushing 
 jobhunter watchdog install  cron check every 10 min (restart + Telegram alert)
 jobhunter clean             free space: logs older than 12 h, old images, build cache
 jobhunter test | env | backup | shell
+jobhunter ai login          connect your Claude subscription (claude setup-token → .env), once
+jobhunter ai status | test [id] | allow <id> | block <id> | logs
 ```
 
 ---
 
 ## 10. Tests & quality gates
 
-`tests/` contains about 175 tests. They make no network calls; LinkedIn and Telegram are faked in `tests/fakes.py`.
+`tests/` contains about 340 tests. They make no network calls: LinkedIn and Telegram are faked in `tests/fakes.py`, Claude by a `FakeAI` / MockTransport and, for the worker, a fake `claude` binary.
 
 | File | Covers |
 |---|---|
@@ -303,6 +357,8 @@ jobhunter test | env | backup | shell
 | `test_referral.py` | every message is job-specific, the note stays ≤ 200 chars even with huge titles, no-resume fallback, name parsing, people-search links, handler + isolation |
 | (locations) | `test_skills_filters.py::test_normalize_location`: Delhi NCR → New Delhi string, aliases, pass-through |
 | `test_health.py` | health verdicts, `/alive` (healthy / down / slow / cooldown / blockers / restart), cycles table + pruning, user_window, in-bot watchdog (alert once, recover), daily report + toggle, **watchdog.sh run against fake docker/curl** (restart, single alert, recovery, frozen bot, admins from DB) |
+| `test_ai.py` | verdict validation (clamp, reject malformed, trim), cache key, payload limits, HTTP client (retry once, no retry on 429/503/400, offline), scanner: ai_wait hold, Claude score, `ai_skip`, threshold, offline release + stop calling, shared cache, not-allowed users, per-cycle cap, no delivery while waiting, review during cooldown; alert/alive/filter UI, `/ai` admin, AI watchdog |
+| `test_ai_server.py` | worker command has no tools / no MCP / no settings, job text only on stdin inside `<job>`, empty API key dropped, parse + failure modes, timeout, hourly budget, HTTP API, compose isolation (no port, read-only, no Telegram token) |
 | `test_bot.py` | approval flow, admin-only, resume upload, filter buttons & text, job buttons, user isolation, delivery cap/quiet/pause/blocked, Clear chat, /deleteme, manual scan cooldown |
 
 **The tests run automatically:**

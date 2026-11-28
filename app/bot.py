@@ -16,13 +16,14 @@ from telegram.error import BadRequest, Forbidden, NetworkError, TelegramError, T
 from telegram.ext import (Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler,
                           TypeHandler, filters)
 
+from . import ai as ai_mod
 from . import db, referral, storage, ui
 from .config import settings
 from .filters import (MAX_KEYWORDS, MAX_LOCATIONS, POSTED, SENIOR_WORDS, Filters, location_label,
                       normalize_location, parse_applicants, parse_list,
                       parse_quiet_hours, parse_threshold, parse_years)
 from .resume import ResumeError, build_profile, extract_text, find_name
-from .scanner import Scanner, in_cooldown, reevaluate_user, user_context
+from .scanner import Scanner, ai_allowed, in_cooldown, reevaluate_user, user_context
 
 log = logging.getLogger(__name__)
 e = html.escape
@@ -198,7 +199,42 @@ async def cmd_users(update: Update, ctx: ContextTypes.DEFAULT_TYPE, user) -> Non
         f, p = user_context(u)
         lines.append(f"{icon.get(u['status'], '?')} <code>{u['id']}</code> {e(u['first_name'] or '')}"
                      + (f" @{e(u['username'])}" if u["username"] else "") + (" 👑" if u["is_admin"] else "")
-                     + (" ⏸" if u["paused"] else "") + f" · {len(f.keywords)} kw · resume {'✅' if p else '—'}")
+                     + (" ⏸" if u["paused"] else "") + (" 🤖" if ai_allowed(u) else "")
+                     + f" · {len(f.keywords)} kw · resume {'✅' if p else '—'}")
+    await reply(update, ctx, "\n".join(lines))
+
+
+def set_ai_access(target: int, allowed: bool) -> str:
+    u = db.get_user(target)
+    if not u:
+        return f"No user {target}."
+    db.update_user(target, ai_allowed=1 if allowed else 0)
+    if not allowed and u["is_admin"]:
+        return f"{e(u['first_name'] or '')} is an admin: admins always use the Claude judge."
+    return (f"🤖 Claude judge {'allowed' if allowed else 'turned off'} for {e(u['first_name'] or '')} ({target}).")
+
+
+@admin_only
+async def cmd_ai(update: Update, ctx: ContextTypes.DEFAULT_TYPE, user) -> None:
+    """/ai · /ai allow <id> · /ai block <id>"""
+    args = ctx.args or []
+    if len(args) == 2 and args[0] in ("allow", "block") and args[1].isdigit():
+        return await reply(update, ctx, set_ai_access(int(args[1]), args[0] == "allow"))
+    st = ai_mod.status()
+    if not st["enabled"]:
+        return await reply(update, ctx, "🤖 Claude judge is <b>off</b> on this server (no AI_URL). "
+                                        "Run <code>jobhunter ai login</code> on the server, then rebuild.")
+    health = await ai_mod.AIClient().health() if settings.ai_url else None
+    who = [u for u in db.users("active") if ai_allowed(u)]
+    lines = ["<b>🤖 Claude judge</b>",
+             f"Worker: {'✅ reachable' if health else '⚠️ not reachable'}"
+             + (f" · model {e(health.get('model', ''))} · login {'✅' if health.get('auth') else '❌ missing'}"
+                f" · {health.get('used_last_hour', 0)}/{health.get('budget', 0)} calls this hour" if health else ""),
+             f"State: {ui.AI_STATES.get(st['state'], st['state'])}" + (f" — {e(st['error'])}" if st["error"] else ""),
+             f"Jobs judged in the last 24 h: {db.ai_calls_since(24)}",
+             "Users with AI: " + (", ".join(f"{e(u['first_name'] or '')} <code>{u['id']}</code>" for u in who) or "—"),
+             "", "<i>/ai allow &lt;id&gt; · /ai block &lt;id&gt; — it uses your Claude plan, so allow only people you "
+                 "trust.</i>"]
     await reply(update, ctx, "\n".join(lines))
 
 
@@ -407,6 +443,14 @@ async def on_filter_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE, user)
         save_filters(uid, f)
         await q.answer(f"Daily report: {'ON' if f.daily_report else 'off'}")
         return await _show_menu(q, f, p)
+    if key == "ai":
+        f.ai_judge = not f.ai_judge
+        save_filters(uid, f)
+        note = f"Claude judge: {'ON' if f.ai_judge else 'off'}"
+        if f.ai_judge and not ai_allowed(user):
+            note += " — waiting for the admin to allow AI for you"
+        await q.answer(note, show_alert=f.ai_judge and not ai_allowed(user))
+        return await _show_menu(q, f, p)
     if key == "ea":
         f.easy_apply = not f.easy_apply
         save_filters(uid, f)
@@ -595,7 +639,7 @@ async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE, user) -> No
         "",
         f"📬 Sent today: {s.get('sent_today', 0)} · total {sum(s.get(k, 0) for k in db.SHOWN)}",
         f"✅ Applied {s.get('applied', 0)} · ⭐ Saved {s.get('saved', 0)} · 🙈 Hidden {s.get('hidden', 0)}",
-        f"⏳ Queued {s.get('pending', 0)} · 🔄 Being checked {s.get('waiting', 0)} · "
+        f"⏳ Queued {s.get('pending', 0)} · 🔄 Being checked {s.get('waiting', 0) + s.get('ai_wait', 0)} · "
         f"🚫 Filtered out {s.get('rejected', 0)}",
         f"📄 Resume: {'✅ ' + e(p.file_name) if p else '— (send it as a file)'}",
         f"🔎 {len(f.keywords)} keywords × {len(f.locations)} locations",
@@ -796,6 +840,7 @@ async def cmd_alive(update: Update, ctx: ContextTypes.DEFAULT_TYPE, user) -> Non
         "paused": bool(user["paused"]), "keywords": f.keywords,
         "locations": [location_label(x) for x in f.locations], "posted": POSTED.get(f.posted, f.posted),
         "easy_apply": f.easy_apply, "has_resume": p is not None,
+        "ai": ai_mod.status() if ai_allowed(user) and f.ai_judge else None,
     })
     await reply(update, ctx, text, reply_markup=kb)
 
@@ -824,6 +869,10 @@ def watchdog_problem(app) -> str:
     recent = [c for c in _recent_cycles(3)]
     if len(recent) == 3 and all(c["error"] for c in recent):
         return f"the last 3 scans failed: {recent[0]['error']}"
+    a = ai_mod.status()
+    down = _minutes_since(a["failing_since"]) if a["enabled"] and a["state"] == "offline" else None
+    if down is not None and down >= 30:
+        return f"the Claude judge has been offline for {down:.0f} min ({a['error']}); alerts use the keyword match"
     return ""
 
 
@@ -991,6 +1040,7 @@ def build() -> Application:
     app.add_handler(CommandHandler("users", cmd_users, filters=private))
     app.add_handler(CommandHandler("approve", cmd_approve, filters=private))
     app.add_handler(CommandHandler("block", cmd_block, filters=private))
+    app.add_handler(CommandHandler("ai", cmd_ai, filters=private))
 
     buttons = {ui.BTN_SCAN: cmd_scan, ui.BTN_FILTERS: cmd_filters, ui.BTN_RESUME: cmd_resume,
                ui.BTN_STATUS: cmd_status, ui.BTN_SAVED: cmd_saved, ui.BTN_INSIGHTS: cmd_insights,

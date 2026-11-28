@@ -58,6 +58,11 @@ def resume_file(user_id: int) -> Path | None:
     return None
 
 
+def resume_text(user_id: int) -> str:
+    p = user_dir(user_id) / "resume.txt.extracted"
+    return p.read_text(errors="ignore") if p.exists() else ""
+
+
 def delete_user(user_id: int) -> None:
     d = user_dir(user_id)
     if d.exists():

@@ -18,6 +18,11 @@ clean_docker() {
     docker image prune -f >/dev/null 2>&1 || true            # dangling (<none>) images only
     docker builder prune -f --filter "until=24h" >/dev/null 2>&1 || true
 }
+# set KEY=VALUE in .env (replace or append); values here are token-like, no sed-special characters
+set_env() {
+    touch .env; chmod 600 .env
+    if grep -q "^$1=" .env; then sed -i "s|^$1=.*|$1=$2|" .env; else printf '%s=%s\n' "$1" "$2" >> .env; fi
+}
 need_id() { [[ -n "${1:-}" ]] || { echo "Give the Telegram user ID, e.g.: jobhunter $CMD 123456789 (see: jobhunter users)"; exit 1; }; }
 
 CMD="${1:-help}"
@@ -80,6 +85,25 @@ case "$CMD" in
                      [[ -f data/watchdog.alerted ]] && echo "Open alert since $(cat data/watchdog.alerted)" ;;
         esac ;;
 
+    # ---------------- Claude judge (the `ai` container)
+    ai)
+        sub="${1:-status}"; shift || true
+        case "$sub" in
+            login)
+                echo "Claude login: this prints a long-lived token for your Claude subscription (Pro/Max)."
+                if command -v claude >/dev/null; then claude setup-token
+                else docker compose run --rm -it --no-deps ai sh -c 'mkdir -p "$HOME" && claude setup-token'; fi
+                read -rsp "Paste the token (sk-ant-oat...) here, input is hidden: " tok; echo
+                [[ "$tok" =~ ^[A-Za-z0-9_-]{20,}$ ]] || { echo "That doesn't look like a token; nothing saved."; exit 1; }
+                set_env CLAUDE_CODE_OAUTH_TOKEN "$tok"
+                docker compose up -d ai && echo "Saved in .env. Check it: jobhunter ai test" ;;
+            status) docker compose ps ai --format '{{.Name}}: {{.Status}}' || true; admin ai-status ;;
+            test)   admin ai-test "${1:-}" ;;
+            allow|block) need_id "${1:-}"; admin "ai-$sub" "$1" ;;
+            logs)   docker compose logs -f --tail "${1:-100}" ai ;;
+            *)      echo "Usage: jobhunter ai login|status|test [id]|allow <id>|block <id>|logs" ;;
+        esac ;;
+
     help|-h|--help|*)
         [[ "$CMD" =~ ^(help|-h|--help)$ ]] || echo "Unknown command: $CMD"
         cat <<'TXT'
@@ -108,6 +132,12 @@ Job Hunter bot — helper commands (run from anywhere, also over SSH)
    jobhunter backup            save .env + database + resumes to ~/jobhunter-backup-<date>.tar.gz
    jobhunter watchdog install  check every 10 min from cron: restart + Telegram alert if the bot is down
    jobhunter watchdog [status|run|remove]
+
+ Claude judge (AI)
+   jobhunter ai login          connect your Claude subscription (once)
+   jobhunter ai status         worker health, who may use it · jobhunter ai logs
+   jobhunter ai test [id]      judge the newest job for a user, print Claude's verdict
+   jobhunter ai allow <id>     let a user use Claude (uses your plan) · jobhunter ai block <id>
 TXT
         ;;
 esac

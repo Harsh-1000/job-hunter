@@ -6,9 +6,30 @@ services:
     restart: unless-stopped            # starts on boot (Docker is enabled at boot) and after crashes
     user: "${UID:-1000}:${GID:-1000}"  # your host user, so ./data stays yours
     init: true
+    environment:
+      AI_URL: http://ai:8787           # the Claude worker below (internal network only)
     volumes:
       - ./data:/app/data               # database, resumes, logs: survive rebuilds
       - ./.env:/app/.env:ro
     logging:
       driver: json-file
       options: { max-size: "1m", max-file: "2" }   # docker's own copy of the output: at most ~2 MB
+
+  # Claude Code, headless, used by the bot to judge jobs. No published port: only the bot can reach it.
+  ai:
+    build: ./ai
+    image: job-hunter-ai:latest
+    container_name: job-hunter-ai
+    restart: unless-stopped
+    user: "${UID:-1000}:${GID:-1000}"
+    init: true
+    read_only: true                    # nothing in the image can be changed; scratch space is /tmp only
+    tmpfs: [/tmp]
+    environment:                       # only the Claude settings from .env, nothing else (no Telegram token)
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      AI_MODEL: ${AI_MODEL:-claude-sonnet-5-5}
+      AI_MAX_CALLS_PER_HOUR: ${AI_MAX_CALLS_PER_HOUR:-120}
+    logging:
+      driver: json-file
+      options: { max-size: "1m", max-file: "2" }

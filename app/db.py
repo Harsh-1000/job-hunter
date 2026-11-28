@@ -5,7 +5,8 @@ jobs        every LinkedIn job seen, shared by all users; full description fetch
 query_seen  which job IDs each LinkedIn search has already returned (stops paging early)
 query_state when each search last ran
 user_queries which searches each user has been attached to (to backfill a search others already ran)
-deliveries  one row per (user, job): waiting -> pending -> sent -> applied/saved/hidden, or rejected
+deliveries  one row per (user, job): waiting -> [ai_wait] -> pending -> sent -> applied/saved/hidden, or rejected
+ai_verdicts Claude's verdict per (job, resume hash): each job is judged once per resume
 messages    message IDs in each chat, so "Clear chat" can delete them
 cycles      one row per scheduled scan cycle (for "Is it working?", the watchdog and the daily report)
 """
@@ -48,7 +49,7 @@ CREATE TABLE IF NOT EXISTS query_state (qkey TEXT PRIMARY KEY, last_run TEXT, ru
 CREATE TABLE IF NOT EXISTS deliveries (
     user_id INTEGER NOT NULL, job_id TEXT NOT NULL,
     keyword TEXT,
-    status TEXT NOT NULL,          -- waiting | pending | sent | applied | saved | hidden | rejected
+    status TEXT NOT NULL,          -- waiting | ai_wait | pending | sent | applied | saved | hidden | rejected
     score INTEGER, reason TEXT, reason_code TEXT, details TEXT,
     created_at TEXT NOT NULL, sent_at TEXT, message_id INTEGER,
     PRIMARY KEY (user_id, job_id)
@@ -64,6 +65,10 @@ CREATE TABLE IF NOT EXISTS cycles (
     ts TEXT NOT NULL, searches INTEGER, listings INTEGER, new_jobs INTEGER, matched INTEGER, error TEXT
 );
 CREATE INDEX IF NOT EXISTS cycles_ts ON cycles(ts);
+CREATE TABLE IF NOT EXISTS ai_verdicts (
+    job_id TEXT NOT NULL, phash TEXT NOT NULL, verdict TEXT NOT NULL, ts TEXT NOT NULL,
+    PRIMARY KEY (job_id, phash)
+);
 """
 
 SHOWN = ("sent", "applied", "saved", "hidden")
@@ -100,6 +105,9 @@ def init() -> None:
             c.execute("ALTER TABLE jobs ADD COLUMN posted_at TEXT")
         if "easy_apply" not in cols:
             c.execute("ALTER TABLE jobs ADD COLUMN easy_apply INTEGER")
+        ucols = {r[1] for r in c.execute("PRAGMA table_info(users)")}
+        if "ai_allowed" not in ucols:   # 1 = may use the Claude judge (admins always may)
+            c.execute("ALTER TABLE users ADD COLUMN ai_allowed INTEGER NOT NULL DEFAULT 0")
 
 
 def posted_at_from(text: str, seen: datetime | None = None) -> str | None:
@@ -150,7 +158,7 @@ def upsert_user(user_id: int, chat_id: int, first_name: str = "", username: str 
 def update_user(user_id: int, **fields) -> None:
     if not fields:
         return
-    allowed = {"status", "is_admin", "filters", "resume", "paused", "last_manual_scan", "chat_id"}
+    allowed = {"status", "is_admin", "filters", "resume", "paused", "last_manual_scan", "chat_id", "ai_allowed"}
     bad = set(fields) - allowed
     if bad:
         raise ValueError(f"unknown user fields {bad}")
@@ -360,6 +368,27 @@ def prune(job_days: int = 30, seen_days: int = 35) -> None:
         c.execute("DELETE FROM query_seen WHERE seen_at < ?", (iso(now() - timedelta(days=seen_days)),))
         c.execute("DELETE FROM messages WHERE ts < ?", (iso(now() - timedelta(days=3)),))
         c.execute("DELETE FROM cycles WHERE ts < ?", (iso(now() - timedelta(days=2)),))
+        c.execute("DELETE FROM ai_verdicts WHERE ts < ?", (cut,))
+
+
+# ---------------- Claude verdicts ----------------
+
+def get_ai_verdict(job_id: str, phash: str) -> dict | None:
+    with conn() as c:
+        r = c.execute("SELECT verdict FROM ai_verdicts WHERE job_id=? AND phash=?", (job_id, phash)).fetchone()
+    return json.loads(r["verdict"]) if r else None
+
+
+def put_ai_verdict(job_id: str, phash: str, verdict: dict) -> None:
+    with conn() as c:
+        c.execute("INSERT OR REPLACE INTO ai_verdicts (job_id, phash, verdict, ts) VALUES (?,?,?,?)",
+                  (job_id, phash, json.dumps(verdict), iso()))
+
+
+def ai_calls_since(hours: float) -> int:
+    with conn() as c:
+        return c.execute("SELECT COUNT(*) FROM ai_verdicts WHERE ts >= ?",
+                         (iso(now() - timedelta(hours=hours)),)).fetchone()[0]
 
 
 # ---------------- scan cycles (health) ----------------

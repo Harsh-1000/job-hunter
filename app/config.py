@@ -51,6 +51,11 @@ class Settings:
     timezone: str = os.getenv("TIMEZONE", "Asia/Kolkata")
     data_dir: Path = ROOT / os.getenv("DATA_DIR", "data")
 
+    # Claude worker (the `ai` container). Empty AI_URL = AI off, keyword match only.
+    ai_url: str = os.getenv("AI_URL", "").strip().rstrip("/")
+    ai_max_per_cycle: int = max(0, _int("AI_MAX_PER_CYCLE", 20))
+    ai_timeout_s: float = _float("AI_TIMEOUT_SECONDS", 100)
+
     @property
     def db_path(self) -> Path:
         return self.data_dir / "jobhunter.db"

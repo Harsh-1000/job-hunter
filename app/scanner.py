@@ -13,7 +13,9 @@ from datetime import timedelta
 
 import httpx
 
-from . import db
+from . import ai as ai_mod
+from . import db, storage
+from .ai import AIClient, AIVerdict
 from .config import settings
 from .filters import LIVE, Filters, Query, queries_for
 from .linkedin import Job, LinkedInClient, RateLimited
@@ -34,6 +36,8 @@ class CycleResult:
     details_fetched: int = 0
     matched: int = 0
     rejected: int = 0
+    ai_judged: int = 0
+    ai_error: str = ""
     skipped: str = ""
     error: str = ""
     users: list[int] = field(default_factory=list)
@@ -43,11 +47,22 @@ class CycleResult:
             return self.skipped
         s = (f"{self.searches} searches, {self.listings} listings, {self.new_jobs} new, "
              f"{self.matched} matched, {self.rejected} filtered out")
+        if self.ai_judged or self.ai_error:
+            s += f", 🤖 {self.ai_judged} judged by Claude" + (f" (AI: {self.ai_error})" if self.ai_error else "")
         return s + (f" — ⚠️ {self.error}" if self.error else "")
 
 
 def user_context(row) -> tuple[Filters, ResumeProfile | None]:
     return Filters.from_json(row["filters"]), ResumeProfile.from_dict(json.loads(row["resume"] or "null"))
+
+
+def ai_allowed(u) -> bool:
+    """The Claude judge spends the owner's Claude plan: admins, plus users an admin allowed."""
+    return bool(settings.ai_url) and bool(u["is_admin"] or u["ai_allowed"])
+
+
+def uses_ai(u, f: Filters, profile: ResumeProfile | None) -> bool:
+    return ai_allowed(u) and f.ai_judge and profile is not None
 
 
 # ---------------- cooldown after LinkedIn rate limits ----------------
@@ -84,8 +99,10 @@ def too_old(row, f: Filters) -> str:
     return f"posted {row['posted'] or 'too long ago'} (live mode: ≤ {settings.live_max_age_minutes} min)"
 
 
-def judge(user_id: int, row, f: Filters, profile: ResumeProfile | None) -> str:
-    """Score one delivery row that has its job details; store the result. Returns new status."""
+def judge(user_id: int, row, f: Filters, profile: ResumeProfile | None, hold: bool = False) -> str:
+    """Score one delivery row that has its job details; store the result. Returns new status.
+    hold=True (Claude judges this user's jobs): a keyword match becomes 'ai_wait' instead of 'pending',
+    so it isn't sent before Claude has looked at it."""
     old = too_old(row, f)
     if old:
         db.set_result(user_id, row["job_id"], "rejected", None, old, "old")
@@ -98,10 +115,42 @@ def judge(user_id: int, row, f: Filters, profile: ResumeProfile | None) -> str:
         db.set_result(user_id, row["job_id"], "rejected", None, "same role already sent (other city)", "duplicate")
         return "rejected"
     m = evaluate(row["title"], row["company"], row["description"] or "", row["applicants"] or "", profile, f)
-    status = "pending" if m.ok else "rejected"
+    status = ("ai_wait" if hold else "pending") if m.ok else "rejected"
     db.set_result(user_id, row["job_id"], status, m.score, m.reason, m.code,
                   {"match": m.to_dict(), "keyword": row["keyword"]})
     return status
+
+
+def apply_ai(user_id: int, job_id: str, f: Filters, v: AIVerdict | None, why_not: str = "") -> str:
+    """Turn an 'ai_wait' row into pending/rejected using Claude's verdict, or (v=None) release it with the
+    keyword score and a note why Claude didn't judge it. Returns the new status."""
+    d = db.get_delivery(user_id, job_id)
+    if not d:
+        return ""
+    details = json.loads(d["details"] or "{}")
+    details.pop("ai", None)
+    details.pop("ai_offline", None)
+    if v is None:
+        if why_not and why_not != ai_mod.NO_LOGIN:   # Claude not set up yet is not an outage: no tag
+            details["ai_offline"] = why_not
+        db.set_result(user_id, job_id, "pending", d["score"], "", "", details)
+        return "pending"
+    details["ai"] = v.to_dict()
+    if v.verdict == "skip":
+        db.set_result(user_id, job_id, "rejected", v.score, f"Claude: {v.why}", "ai_skip", details)
+        return "rejected"
+    if v.score < f.min_score:
+        db.set_result(user_id, job_id, "rejected", v.score, f"match {v.score}% < your {f.min_score}% threshold",
+                      "threshold", details)
+        return "rejected"
+    db.set_result(user_id, job_id, "pending", v.score, "", "", details)
+    return "pending"
+
+
+def ai_key(user_id: int, f: Filters, profile: ResumeProfile | None) -> tuple[str, str]:
+    """(resume text, cache key) for this user's Claude verdicts."""
+    text = storage.resume_text(user_id)
+    return text, ai_mod.profile_hash(text, f.keywords, f.years(profile.years if profile else None))
 
 
 def migrate_location_default() -> int:
@@ -158,23 +207,29 @@ def reevaluate_user(user_id: int) -> int:
     if not u:
         return 0
     f, profile = user_context(u)
+    hold = uses_ai(u, f, profile)
+    phash = ai_key(user_id, f, profile)[1] if hold else ""
     hours = max(24, POSTED_HOURS.get(f.posted, 24))
-    for row in db.deliveries(user_id, ("pending", "rejected"), since_hours=hours):
+    for row in db.deliveries(user_id, ("pending", "rejected", "ai_wait"), since_hours=hours):
         if row["detail_status"] == "none":
             db.set_result(user_id, row["job_id"], "waiting", None)   # scanner fetches details next cycle
-        else:
-            judge(user_id, row, f, profile)
+        elif judge(user_id, row, f, profile, hold=hold) == "ai_wait":
+            cached = db.get_ai_verdict(row["job_id"], phash)
+            if cached:   # Claude already judged this job for this resume: no new call needed
+                apply_ai(user_id, row["job_id"], f, AIVerdict.from_dict(cached))
     return len(db.deliveries(user_id, ("pending",)))
 
 
 # ---------------- the cycle ----------------
 
 class Scanner:
-    def __init__(self, client_factory=LinkedInClient) -> None:
+    def __init__(self, client_factory=LinkedInClient, ai_factory=AIClient) -> None:
         self.client_factory = client_factory
+        self.ai_factory = ai_factory
 
-    def _plan(self, only_user: int | None) -> tuple[dict[str, tuple[Query, set[int]]], dict[int, tuple]]:
-        plan: dict[str, tuple[Query, set[int]]] = {}
+    @staticmethod
+    def _users(only_user: int | None) -> dict[int, tuple]:
+        """uid -> (filters, profile, uses_ai) for every user this cycle scans for."""
         ctx: dict[int, tuple] = {}
         for u in db.users("active"):
             if only_user is not None and u["id"] != only_user:
@@ -182,15 +237,20 @@ class Scanner:
             if only_user is None and u["paused"]:
                 continue
             f, profile = user_context(u)
-            if not f.keywords:
-                continue
-            ctx[u["id"]] = (f, profile)
+            if f.keywords:
+                ctx[u["id"]] = (f, profile, uses_ai(u, f, profile))
+        return ctx
+
+    def _plan(self, only_user: int | None) -> tuple[dict[str, tuple[Query, set[int]]], dict[int, tuple]]:
+        plan: dict[str, tuple[Query, set[int]]] = {}
+        ctx = self._users(only_user)
+        for uid, (f, _, _) in ctx.items():
             for q in queries_for(f):
-                plan.setdefault(q.key, (q, set()))[1].add(u["id"])
-                if db.attach_query(u["id"], q.key) and db.query_runs(q.key):
+                plan.setdefault(q.key, (q, set()))[1].add(uid)
+                if db.attach_query(uid, q.key) and db.query_runs(q.key):
                     # search already run for someone else: give this user its recent results too
                     ids = db.query_seen_since(q.key, POSTED_HOURS.get(q.posted, 24))
-                    db.add_waiting(u["id"], ids, q.keyword)
+                    db.add_waiting(uid, ids, q.keyword)
         return plan, ctx
 
     async def run(self, only_user: int | None = None) -> CycleResult:
@@ -198,6 +258,7 @@ class Scanner:
         until = in_cooldown()
         if until:
             res.skipped = f"LinkedIn asked us to slow down — paused until {until} UTC"
+            await self.ai_review(self._users(only_user), res)   # Claude can still finish what's queued
             return res
         plan, ctx = self._plan(only_user)
         res.users = sorted(ctx)
@@ -229,7 +290,7 @@ class Scanner:
                 db.query_ran(qkey)
 
             # 2. details + matching for every waiting row
-            for uid, (f, profile) in ctx.items():
+            for uid, (f, profile, use_ai) in ctx.items():
                 for row in db.deliveries(uid, ("waiting",)):
                     if row["detail_status"] == "none":
                         # cheap rejects before spending a request on the description
@@ -258,9 +319,10 @@ class Scanner:
                             if db.detail_failed(job.id) < 3:
                                 continue
                         row = db.get_delivery(uid, row["job_id"])
-                    if judge(uid, row, f, profile) == "pending":
+                    st = judge(uid, row, f, profile, hold=use_ai)
+                    if st == "pending":
                         res.matched += 1
-                    else:
+                    elif st == "rejected":
                         res.rejected += 1
             clear_cooldown()
         except RateLimited as e:
@@ -272,5 +334,58 @@ class Scanner:
             log.warning(res.error)
         finally:
             await client.close()
+        # 3. Claude looks at the keyword matches (runs even after a LinkedIn error: those jobs are already here)
+        await self.ai_review(ctx, res)
         log.info("cycle: %s", res.summary())
         return res
+
+    async def ai_review(self, ctx: dict[int, tuple], res: CycleResult) -> None:
+        """Every 'ai_wait' row -> Claude's verdict (cached per job + resume), at most AI_MAX_PER_CYCLE new calls.
+        If Claude is offline / over budget, the rows are released with the keyword score so nothing is lost."""
+        client: AIClient | None = None
+        calls, failed, error = 0, False, ""
+        try:
+            for uid, (f, profile, use_ai) in ctx.items():
+                rows = db.deliveries(uid, ("ai_wait",), limit=200)
+                if not rows:
+                    continue
+                if not use_ai:   # AI switched off (or not allowed any more) since: send with the keyword score
+                    for r in rows:
+                        self._count(res, apply_ai(uid, r["job_id"], f, None))
+                    continue
+                text, phash = ai_key(uid, f, profile)
+                years = f.years(profile.years if profile else None)
+                for r in rows:
+                    cached = db.get_ai_verdict(r["job_id"], phash)
+                    if cached:
+                        self._count(res, apply_ai(uid, r["job_id"], f, AIVerdict.from_dict(cached)))
+                        continue
+                    if failed:
+                        self._count(res, apply_ai(uid, r["job_id"], f, None, error))
+                        continue
+                    if calls >= settings.ai_max_per_cycle:
+                        continue   # stays ai_wait: judged next cycle
+                    client = client or self.ai_factory()
+                    calls += 1
+                    v = await client.judge(ai_mod.payload(r, text, profile.skills if profile else [],
+                                                          f.keywords, years))
+                    if v is None:
+                        failed, error = True, client.last_error or "unavailable"
+                        self._count(res, apply_ai(uid, r["job_id"], f, None, error))
+                        continue
+                    db.put_ai_verdict(r["job_id"], phash, v.to_dict())
+                    res.ai_judged += 1
+                    self._count(res, apply_ai(uid, r["job_id"], f, v))
+        finally:
+            if client is not None:
+                await client.close()
+        if calls:
+            ai_mod.record_status(error)
+            res.ai_error = error
+
+    @staticmethod
+    def _count(res: CycleResult, status: str) -> None:
+        if status == "pending":
+            res.matched += 1
+        elif status == "rejected":
+            res.rejected += 1
